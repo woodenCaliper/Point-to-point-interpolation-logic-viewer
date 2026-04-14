@@ -1,8 +1,8 @@
 # AI Implementation Instructions
 
 ## 現在の運用モード
-- 現在は**仕様策定フェーズ**であり、実装は行わない。
-- 既存の実装コードは削除済みとし、次回の実装再開指示が出るまで追加しない。
+- 現在は**実装フェーズ**。
+- `human requirement.md` の要件に従って `index.html` を更新し、差分を検証して進める。
 
 ## 要件サマリ（`human requirement.md` 準拠）
 - 単一HTMLで 2D 経路比較ビューアを実装する。

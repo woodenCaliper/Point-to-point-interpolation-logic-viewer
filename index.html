@@ -352,8 +352,8 @@ function sampleDubinsByType(s,g,R,step,type){
       if(dir===0){ q.x+=ds*Math.cos(q.yaw); q.y+=ds*Math.sin(q.yaw); }
       else {
         const y2=q.yaw+dir*ds;
-        q.x+=Math.sin(y2)-Math.sin(q.yaw);
-        q.y+=-Math.cos(y2)+Math.cos(q.yaw);
+        q.x+=(Math.sin(y2)-Math.sin(q.yaw))/dir;
+        q.y+=(-Math.cos(y2)+Math.cos(q.yaw))/dir;
         q.yaw=y2;
       }
       list.push({...q});
@@ -436,6 +436,22 @@ function generateCandidates(cfg){
   return list;
 }
 
+function evaluatePathIntegrity(candidate, start, goal){
+  const pts = candidate.points || [];
+  if (!pts.length) {
+    return { startError: Infinity, endError: Infinity, maxStep: Infinity, connected: false };
+  }
+  let maxStep = 0;
+  for (let i=1;i<pts.length;i++){
+    const d = Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y);
+    if (d > maxStep) maxStep = d;
+  }
+  const startError = Math.hypot(pts[0].x-start.x, pts[0].y-start.y);
+  const endError = Math.hypot(pts[pts.length-1].x-goal.x, pts[pts.length-1].y-goal.y);
+  const connected = startError < 1e-6 && endError < 1e-6;
+  return { startError, endError, maxStep, connected };
+}
+
 function computeShortestIndex(paths){
   let bestIdx = 0;
   for (let i=1;i<paths.length;i++) {
@@ -513,7 +529,11 @@ function recalculate(){
   }
 
   const cfg = input.cfg;
-  const paths = generateCandidates(cfg).map(p => ({ ...p, visible: true }));
+  const paths = generateCandidates(cfg).map(p => ({
+    ...p,
+    visible: true,
+    integrity: evaluatePathIntegrity(p, cfg.start, cfg.goal),
+  }));
   const shortestIdx = computeShortestIndex(paths);
   paths.forEach((p, idx) => p.isShortest = idx === shortestIdx);
 
@@ -558,12 +578,15 @@ function renderStats(){
   const { cfg, paths, shortestIdx } = state.result;
   const visibleCount = paths.filter(p => p.visible).length;
   const shortest = paths[shortestIdx];
+  const integrity = shortest?.integrity;
   stats.textContent = [
     `アルゴリズム: ${cfg.algorithm}`,
     `候補数: ${paths.length}`,
     `表示中候補: ${visibleCount}`,
     `最短候補: ${shortest?.label ?? '-'}`,
     `最短距離: ${Number.isFinite(shortest?.totalLength) ? formatNumber(shortest.totalLength) + ' mm' : 'N/A'}`,
+    `接続性(最短候補): ${integrity?.connected ? 'OK' : 'NG'}`,
+    `始点誤差/終点誤差: ${integrity ? `${formatNumber(integrity.startError)} / ${formatNumber(integrity.endError)} mm` : 'N/A'}`,
     `視点スケール: ${state.camera.scale.toFixed(3)} px/mm`,
     `Grid: ${formatNumber(gridStepForScale())} mm`,
   ].join('\n');

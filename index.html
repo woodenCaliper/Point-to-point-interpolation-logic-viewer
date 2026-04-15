@@ -135,6 +135,19 @@ function deg2rad(d){ return d * Math.PI / 180; }
 function mod2pi(a){ let r = a % TAU; if (r < 0) r += TAU; return r; }
 function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 function isFiniteNum(v){ return Number.isFinite(v); }
+function wrapDeg180(v){
+  let d = ((v + 180) % 360 + 360) % 360 - 180;
+  if (d === -180) d = 180;
+  return d;
+}
+
+function normalizeAngleInput(id){
+  const el = $(id);
+  const n = Number(el.value);
+  if (!Number.isFinite(n)) return;
+  const wrapped = wrapDeg180(n);
+  if (wrapped !== n) el.value = String(wrapped);
+}
 
 function updateInputVisibility(){
   const algo = $('algorithm').value;
@@ -543,6 +556,8 @@ function applyShortestOnlyToggle(){
 
 function recalculate(){
   updateInputVisibility();
+  normalizeAngleInput('syaw');
+  normalizeAngleInput('gyaw');
   const input = gatherInput();
   state.invalidReasons = input.invalidReasons;
   const wasShortestOnly = state.shortestOnly;

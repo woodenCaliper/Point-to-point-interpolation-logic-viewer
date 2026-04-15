@@ -545,6 +545,8 @@ function recalculate(){
   updateInputVisibility();
   const input = gatherInput();
   state.invalidReasons = input.invalidReasons;
+  const wasShortestOnly = state.shortestOnly;
+  const prevBeforeShortestVisible = state.beforeShortestVisible.slice();
 
   if (!input.valid) {
     state.result = null;
@@ -562,8 +564,14 @@ function recalculate(){
   const shortestIdx = computeShortestIndex(paths);
   paths.forEach((p, idx) => p.isShortest = idx === shortestIdx);
 
-  state.shortestOnly = false;
-  state.beforeShortestVisible = [];
+  if (wasShortestOnly) {
+    state.shortestOnly = true;
+    state.beforeShortestVisible = paths.map((_, idx) => prevBeforeShortestVisible[idx] ?? true);
+    paths.forEach((p, idx) => { p.visible = idx === shortestIdx; });
+  } else {
+    state.shortestOnly = false;
+    state.beforeShortestVisible = [];
+  }
   state.result = { cfg, paths, shortestIdx };
 
   if (!state.camera.initialized) {

@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Point-to-Point Interpolation Logic Viewer</title>
+  <style>
+    :root {
+      --bg:#0b0f14; --panel:#141b24; --line:#2a3545; --text:#e6edf3; --muted:#9fb0c4;
+      --accent:#64b5ff; --error:#ff6b6b; --ok:#39d98a;
+    }
+    * { box-sizing:border-box; }
+    html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, sans-serif; }
+    .layout { height:100vh; display:grid; grid-template-columns: 320px 1fr 340px; gap:8px; padding:8px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; overflow:auto; }
+    h1 { margin:0 0 8px; font-size:16px; }
+    h2 { margin:10px 0 8px; font-size:13px; color:var(--accent); }
+    .group { border:1px solid var(--line); border-radius:8px; padding:8px; margin-bottom:8px; }
+    .control { display:grid; gap:4px; margin-bottom:8px; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    label { font-size:12px; color:var(--muted); }
+    .checkline { display:flex; align-items:center; gap:8px; line-height:1; }
+    .checkline input[type="checkbox"] { width:auto; margin:0; }
+    input, select, button { width:100%; padding:7px 8px; border-radius:8px; border:1px solid #3c485c; background:#0f141c; color:var(--text); }
+    input.invalid { border-color:var(--error); box-shadow:0 0 0 1px color-mix(in srgb, var(--error) 70%, transparent); }
+    .unit { color:#7fb1ff; font-size:11px; }
+    .canvas-wrap { height:100%; min-height:420px; border:1px solid var(--line); border-radius:10px; background:#0d131c; overflow:hidden; }
+    canvas { width:100%; height:100%; display:block; cursor:grab; }
+    canvas.dragging { cursor:grabbing; }
+    .stats { font-size:12px; line-height:1.5; white-space:pre-wrap; border:1px solid var(--line); border-radius:8px; padding:8px; background:#0f141b; }
+    .small { font-size:11px; color:var(--muted); }
+    .path-item { display:flex; gap:8px; align-items:center; padding:4px 0; border-bottom:1px dashed #243041; }
+    .path-item:last-child { border-bottom:none; }
+    .path-item label { flex:1; display:flex; justify-content:space-between; gap:8px; align-items:center; }
+    .path-name { color:#dbe8f8; }
+    .path-len { color:#8fb6dd; font-size:11px; }
+    #shortestOnlyBtn.active { border-color:#5ba6ff; color:#d8ebff; background:#14263a; }
+    .warn { color:#ffb4b4; font-size:12px; }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside class="panel">
+    <h1>左ペイン: パス生成入力</h1>
+
+    <div class="control">
+      <label>補間ロジック</label>
+      <select id="algorithm">
+        <option value="linear">直線補間 (Linear)</option>
+        <option value="dubins">Dubins Path</option>
+        <option value="cc_dubins">CC-Dubins Path</option>
+      </select>
+    </div>
+
+    <div class="group">
+      <h2>Start point</h2>
+      <div class="row">
+        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="sx" type="number" step="1" value="-30" /></div>
+        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="sy" type="number" step="1" value="-20" /></div>
+      </div>
+      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="syaw" type="number" step="1" value="20" /></div>
+      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="number" step="1" value="0" /></div>
+    </div>
+
+    <div class="group">
+      <h2>End point</h2>
+      <div class="row">
+        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="gx" type="number" step="1" value="45" /></div>
+        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="gy" type="number" step="1" value="30" /></div>
+      </div>
+      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="gyaw" type="number" step="1" value="-35" /></div>
+      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="number" step="1" value="0" /></div>
+    </div>
+
+    <div class="group">
+      <h2>Path</h2>
+      <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" /></div>
+      <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="25" /></div>
+    </div>
+
+    <div class="row"><button id="randomBtn">ランダム</button></div>
+    <div class="control" style="margin-top:8px;"><button id="fitBtn">視点を再フィット</button></div>
+  </aside>
+
+  <main class="panel" style="padding:8px;">
+    <div class="canvas-wrap"><canvas id="canvas"></canvas></div>
+  </main>
+
+  <aside class="panel">
+    <h1>右ペイン: 表示 / 生成結果</h1>
+    <div class="group">
+      <h2>表示設定</h2>
+      <div class="control"><label class="checkline"><input type="checkbox" id="showPoints" /> サンプル点</label></div>
+      <div class="control"><label class="checkline"><input type="checkbox" id="showCurvature" checked /> 曲率ガイド</label></div>
+      <div class="small">操作: ホイール=ズーム / 左ドラッグ=パン</div>
+    </div>
+
+    <div class="group">
+      <h2>候補パス表示</h2>
+      <div id="pathList"></div>
+      <button id="shortestOnlyBtn">最短のみ表示: OFF</button>
+    </div>
+
+    <div class="group">
+      <h2>生成結果</h2>
+      <div id="stats" class="stats"></div>
+      <div id="warn" class="warn"></div>
+    </div>
+    <p class="small">入力単位: 位置=mm / 角度=° / 曲率=1/mm</p>
+  </aside>
+</div>
+
+<script>
+const TAU = Math.PI * 2;
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const $ = id => document.getElementById(id);
+
+const state = {
+  camera: { cx: 0, cy: 0, scale: 1, initialized: false },
+  result: null,
+  invalidReasons: [],
+  shortestOnly: false,
+  beforeShortestVisible: [],
+  isDragging: false,
+  lastMouse: { x: 0, y: 0 },
+};
+
+const COLORS = ['#60a5fa','#f59e0b','#34d399','#f472b6','#a78bfa','#f87171','#22d3ee','#fde047'];
+
+function deg2rad(d){ return d * Math.PI / 180; }
+function mod2pi(a){ let r = a % TAU; if (r < 0) r += TAU; return r; }
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function isFiniteNum(v){ return Number.isFinite(v); }
+function wrapDeg180(v){
+  let d = ((v + 180) % 360 + 360) % 360 - 180;
+  if (d === -180) d = 180;
+  return d;
+}
+
+function normalizeAngleInput(id){
+  const el = $(id);
+  const n = Number(el.value);
+  if (!Number.isFinite(n)) return;
+  const wrapped = wrapDeg180(n);
+  if (wrapped !== n) el.value = String(wrapped);
+}
+
+function updateInputVisibility(){
+  const algo = $('algorithm').value;
+  document.querySelectorAll('.only-theta').forEach(e => e.style.display = (algo === 'linear') ? 'none' : 'grid');
+  document.querySelectorAll('.only-turn').forEach(e => e.style.display = (algo === 'linear') ? 'none' : 'grid');
+  document.querySelectorAll('.only-curv').forEach(e => e.style.display = (algo === 'cc_dubins') ? 'grid' : 'none');
+}
+
+function parseField(id, validator){
+  const el = $(id);
+  const raw = el.value.trim();
+  const val = Number(raw);
+  const ok = raw.length > 0 && Number.isFinite(val) && Number.isInteger(val) && (!validator || validator(val));
+  el.classList.toggle('invalid', !ok);
+  return ok ? val : null;
+}
+
+function gatherInput(){
+  const algorithm = $('algorithm').value;
+  const invalidReasons = [];
+
+  const sx = parseField('sx'); const sy = parseField('sy');
+  const gx = parseField('gx'); const gy = parseField('gy');
+
+  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, ccTransition = 0.25;
+
+  if (algorithm !== 'linear') {
+    syaw = parseField('syaw'); gyaw = parseField('gyaw');
+    radius = parseField('radius', v => v > 0);
+  }
+  if (algorithm === 'cc_dubins') {
+    sk = parseField('sk'); gk = parseField('gk');
+    ccTransition = parseField('ccTransition', v => v >= 0 && v <= 100);
+  }
+
+  const required = { sx, sy, gx, gy };
+  if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw, radius });
+  if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
+
+  for (const [k,v] of Object.entries(required)) {
+    if (!isFiniteNum(v)) invalidReasons.push(`入力エラー: ${k}`);
+  }
+
+  const cfg = {
+    algorithm,
+    start: { x: sx, y: sy, yaw: deg2rad(syaw || 0), k: sk || 0 },
+    goal: { x: gx, y: gy, yaw: deg2rad(gyaw || 0), k: gk || 0 },
+    radius,
+    step: 1,
+    ccTransition: (ccTransition || 0) / 100,
+    showPoints: $('showPoints').checked,
+    showCurvature: $('showCurvature').checked,
+  };
+
+  return { valid: invalidReasons.length === 0, cfg, invalidReasons };
+}
+
+function ws(x, y){
+  return {
+    x:(x-state.camera.cx)*state.camera.scale + canvas.clientWidth/2,
+    y:canvas.clientHeight/2 - (y-state.camera.cy)*state.camera.scale
+  };
+}
+
+function sw(px, py){
+  return {
+    x:(px-canvas.clientWidth/2)/state.camera.scale + state.camera.cx,
+    y:(canvas.clientHeight/2-py)/state.camera.scale + state.camera.cy
+  };
+}
+
+function fitView(points, s, g){
+  const list = [...points, {x:s.x,y:s.y}, {x:g.x,y:g.y}];
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for (const p of list){ minX=Math.min(minX,p.x); minY=Math.min(minY,p.y); maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y); }
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const pad = 16;
+  const sx = Math.max(10, maxX - minX + pad*2);
+  const sy = Math.max(10, maxY - minY + pad*2);
+  state.camera.cx = (minX + maxX) / 2;
+  state.camera.cy = (minY + maxY) / 2;
+  state.camera.scale = Math.min(w / sx, h / sy);
+  state.camera.initialized = true;
+}
+
+function gridStepForScale(){
+  const worldTarget = 80 / state.camera.scale;
+  if (worldTarget <= 0) return 1;
+  const p = Math.floor(Math.log10(worldTarget));
+  const base = 10 ** p;
+  const candidates = [1*base, 5*base, 10*base, 50*base, 100*base];
+  for (const c of candidates) if (worldTarget <= c) return c;
+  return 100 * base;
+}
+
+function drawGrid(){
+  const step = gridStepForScale();
+  const left = state.camera.cx - canvas.clientWidth/(2*state.camera.scale);
+  const right = state.camera.cx + canvas.clientWidth/(2*state.camera.scale);
+  const bottom = state.camera.cy - canvas.clientHeight/(2*state.camera.scale);
+  const top = state.camera.cy + canvas.clientHeight/(2*state.camera.scale);
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#1d2736';
+  for(let x=Math.floor(left/step)*step; x<=right; x+=step){ const a=ws(x,bottom), b=ws(x,top); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  for(let y=Math.floor(bottom/step)*step; y<=top; y+=step){ const a=ws(left,y), b=ws(right,y); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+}
+
+function drawAxisGizmo(){
+  const ox = 48, oy = canvas.clientHeight - 40;
+  ctx.strokeStyle = '#a6b5c9'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(ox,oy); ctx.lineTo(ox+24,oy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(ox,oy); ctx.lineTo(ox,oy-24); ctx.stroke();
+  ctx.fillStyle = '#a6b5c9'; ctx.font = '11px sans-serif';
+  ctx.fillText('+X', ox+27, oy+4);
+  ctx.fillText('+Y', ox-7, oy-28);
+
+  const mmStep = gridStepForScale();
+  ctx.fillStyle = '#d3e7ff';
+  ctx.fillText(`Grid: ${formatNumber(mmStep)} mm`, ox+44, oy-9);
+}
+
+function drawHeadingArrow(originScreen, yaw, color){
+  const shaftLen = 24; // 始点/終点点の直径(約12px)の2倍
+  const headLen = 12; // 始点/終点点の直径(約12px)に合わせる
+  const headOpen = Math.PI / 7;
+  const ex = originScreen.x + shaftLen * Math.cos(yaw);
+  const ey = originScreen.y - shaftLen * Math.sin(yaw);
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(originScreen.x, originScreen.y);
+  ctx.lineTo(ex, ey);
+  ctx.stroke();
+
+  const a1 = yaw + Math.PI - headOpen;
+  const a2 = yaw + Math.PI + headOpen;
+  const hx1 = ex + headLen * Math.cos(a1);
+  const hy1 = ey - headLen * Math.sin(a1);
+  const hx2 = ex + headLen * Math.cos(a2);
+  const hy2 = ey - headLen * Math.sin(a2);
+
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(hx1, hy1);
+  ctx.lineTo(hx2, hy2);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawStartIcon(start,cfg){
+  const p = ws(start.x,start.y);
+  ctx.fillStyle='#22c55e'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
+
+  if (cfg.algorithm !== 'linear'){
+    drawHeadingArrow(p, start.yaw, '#22c55e');
+  }
+
+  if (cfg.algorithm === 'cc_dubins' && cfg.showCurvature && Math.abs(start.k) > 1e-8){
+    const R = Math.min(150, Math.abs(1 / start.k));
+    const sign = Math.sign(start.k);
+    const nx = -Math.sin(start.yaw) * sign;
+    const ny = Math.cos(start.yaw) * sign;
+    const c = ws(start.x + nx*R, start.y + ny*R);
+    ctx.strokeStyle='#86efac'; ctx.lineWidth=1.3; ctx.setLineDash([5,4]);
+    ctx.beginPath(); ctx.arc(c.x,c.y,R*state.camera.scale,0,TAU); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function drawGoalIcon(goal,cfg){
+  const p = ws(goal.x,goal.y);
+  ctx.fillStyle='#fb923c'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
+  if (cfg.algorithm !== 'linear'){
+    drawHeadingArrow(p, goal.yaw, '#fb923c');
+  }
+}
+
+function drawPath(candidate, idx, showPoints){
+  const points = candidate.points;
+  if(!points.length) return;
+  ctx.strokeStyle = COLORS[idx % COLORS.length];
+  ctx.lineWidth = candidate.isShortest ? 3 : 2;
+  let p=ws(points[0].x, points[0].y);
+  ctx.beginPath(); ctx.moveTo(p.x,p.y);
+  for(let i=1;i<points.length;i++){ p=ws(points[i].x, points[i].y); ctx.lineTo(p.x,p.y); }
+  ctx.stroke();
+
+  if(showPoints){
+    ctx.fillStyle = '#fcd34d';
+    for(let i=0;i<points.length;i+=Math.max(1,Math.floor(points.length/180))){
+      const q=ws(points[i].x, points[i].y);
+      ctx.beginPath(); ctx.arc(q.x,q.y,2,0,TAU); ctx.fill();
+    }
+  }
+}
+
+function sampleLinear(s,g,step){
+  const samplingStep = 1;
+  const dx=g.x-s.x, dy=g.y-s.y, dist=Math.hypot(dx,dy), n=Math.max(2,Math.ceil(dist/samplingStep)+1), pts=[];
+  for(let i=0;i<n;i++){ const t=i/(n-1); pts.push({x:s.x+dx*t,y:s.y+dy*t,yaw:Math.atan2(dy,dx)}); }
+  return { points:pts, totalLength:dist, segments:['S'], type:'LINEAR', rawSeg:[dist] };
+}
+
+function transformToLocal(s,g,R){
+  const dx=(g.x-s.x)/R, dy=(g.y-s.y)/R;
+  const x=Math.cos(s.yaw)*dx + Math.sin(s.yaw)*dy;
+  const y=-Math.sin(s.yaw)*dx + Math.cos(s.yaw)*dy;
+  return { x, y, th:mod2pi(g.yaw-s.yaw) };
+}
+
+function dubinsWord(x,y,phi,type){
+  const d=Math.hypot(x,y), th=mod2pi(Math.atan2(y,x)), a=mod2pi(-th), b=mod2pi(phi-th);
+  const LSL=()=>{ const p2=2+d*d-2*Math.cos(a-b)+2*d*(Math.sin(a)-Math.sin(b)); if(p2<0)return null; const p=Math.sqrt(p2); const t=mod2pi(-a+Math.atan2(Math.cos(b)-Math.cos(a),d+Math.sin(a)-Math.sin(b))); const q=mod2pi(b-Math.atan2(Math.cos(b)-Math.cos(a),d+Math.sin(a)-Math.sin(b))); return [t,p,q]; };
+  const RSR=()=>{ const p2=2+d*d-2*Math.cos(a-b)+2*d*(-Math.sin(a)+Math.sin(b)); if(p2<0)return null; const p=Math.sqrt(p2); const t=mod2pi(a-Math.atan2(Math.cos(a)-Math.cos(b),d-Math.sin(a)+Math.sin(b))); const q=mod2pi(-b+Math.atan2(Math.cos(a)-Math.cos(b),d-Math.sin(a)+Math.sin(b))); return [t,p,q]; };
+  const LSR=()=>{ const p2=-2+d*d+2*Math.cos(a-b)+2*d*(Math.sin(a)+Math.sin(b)); if(p2<0)return null; const p=Math.sqrt(p2); const tmp=Math.atan2(-Math.cos(a)-Math.cos(b),d+Math.sin(a)+Math.sin(b))-Math.atan2(-2,p); return [mod2pi(-a+tmp),p,mod2pi(-b+tmp)]; };
+  const RSL=()=>{ const p2=d*d-2+2*Math.cos(a-b)-2*d*(Math.sin(a)+Math.sin(b)); if(p2<0)return null; const p=Math.sqrt(p2); const tmp=Math.atan2(Math.cos(a)+Math.cos(b),d-Math.sin(a)-Math.sin(b))-Math.atan2(2,p); return [mod2pi(a-tmp),p,mod2pi(b-tmp)]; };
+  const RLR=()=>{ const tmp=(6-d*d+2*Math.cos(a-b)+2*d*(Math.sin(a)-Math.sin(b)))/8; if(Math.abs(tmp)>1)return null; const p=mod2pi(TAU-Math.acos(tmp)); const t=mod2pi(a-Math.atan2(Math.cos(a)-Math.cos(b),d-Math.sin(a)+Math.sin(b))+p/2); return [t,p,mod2pi(a-b-t+p)]; };
+  const LRL=()=>{ const tmp=(6-d*d+2*Math.cos(a-b)+2*d*(-Math.sin(a)+Math.sin(b)))/8; if(Math.abs(tmp)>1)return null; const p=mod2pi(TAU-Math.acos(tmp)); const t=mod2pi(-a-Math.atan2(Math.cos(a)-Math.cos(b),d+Math.sin(a)-Math.sin(b))+p/2); return [t,p,mod2pi(b-a-t+p)]; };
+  return ({LSL,RSR,LSR,RSL,RLR,LRL})[type]();
+}
+
+function sampleDubinsByType(s,g,R,step,type){
+  const samplingStep = 1;
+  const local=transformToLocal(s,g,R);
+  const seg=dubinsWord(local.x,local.y,local.th,type);
+  if(!seg) return null;
+
+  const q={x:0,y:0,yaw:0}, list=[{...q}], modes=type.split('');
+  const integ=(m,len)=>{
+    const dir=m==='L'?1:m==='R'?-1:0;
+    const n=Math.max(1,Math.ceil((len*R)/samplingStep));
+    const ds=len/n;
+    for(let i=0;i<n;i++){
+      if(dir===0){ q.x+=ds*Math.cos(q.yaw); q.y+=ds*Math.sin(q.yaw); }
+      else {
+        const y2=q.yaw+dir*ds;
+        q.x+=(Math.sin(y2)-Math.sin(q.yaw))/dir;
+        q.y+=(-Math.cos(y2)+Math.cos(q.yaw))/dir;
+        q.yaw=y2;
+      }
+      list.push({...q});
+    }
+  };
+
+  integ(modes[0],seg[0]); integ(modes[1],seg[1]); integ(modes[2],seg[2]);
+  const c=Math.cos(s.yaw), si=Math.sin(s.yaw);
+  const points=list.map(p=>({x:s.x+R*(c*p.x-si*p.y), y:s.y+R*(si*p.x+c*p.y), yaw:mod2pi(s.yaw+p.yaw)}));
+  const totalLength = (seg[0]+seg[1]+seg[2]) * R;
+  return { points, totalLength, segments:modes, type, rawSeg:seg.map(v=>v*R) };
+}
+
+function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
+  const samplingStep = 1;
+  const target=1/R;
+  const transition=Math.max(samplingStep*3, R*trRate);
+  const pts=[{x:s.x,y:s.y,yaw:s.yaw}];
+  const st={x:s.x,y:s.y,yaw:s.yaw,k:s.k||0};
+
+  const adv=(ds,kN)=>{
+    const kM=(st.k+kN)/2;
+    const yM=st.yaw+0.5*kM*ds;
+    st.x+=ds*Math.cos(yM);
+    st.y+=ds*Math.sin(yM);
+    st.yaw=mod2pi(st.yaw+kM*ds);
+    st.k=kN;
+    pts.push({x:st.x,y:st.y,yaw:st.yaw});
+  };
+
+  for(let i=0;i<base.segments.length;i++){
+    const mode=base.segments[i];
+    const L=base.rawSeg[i] || 0;
+    const sign=mode==='L'?1:mode==='R'?-1:0;
+    if(mode==='S'){
+      const n=Math.max(1,Math.ceil(L/samplingStep));
+      for(let j=0;j<n;j++) adv(L/n,0);
+      continue;
+    }
+    const tr=Math.min(transition, L*0.5);
+    const nIn=Math.max(1,Math.ceil(tr/samplingStep));
+    for(let j=1;j<=nIn;j++) adv(tr/nIn, sign*target*(j/nIn));
+
+    const mid=Math.max(0,L-2*tr);
+    const nMid=Math.max(0,Math.floor(mid/samplingStep));
+    for(let j=0;j<nMid;j++) adv(mid/nMid, sign*target);
+
+    const nOut=Math.max(1,Math.ceil(tr/samplingStep));
+    for(let j=nOut;j>=1;j--) adv(tr/nOut, sign*target*((j-1)/nOut));
+  }
+
+  pts[pts.length-1]={x:g.x,y:g.y,yaw:g.yaw};
+  let len=0;
+  for(let i=1;i<pts.length;i++) len += Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y);
+  return { points:pts, totalLength:len, segments:base.segments, type:`CC-${base.type}`, rawSeg:base.rawSeg.slice() };
+}
+
+function generateCandidates(cfg){
+  const list=[];
+  if (cfg.algorithm === 'linear') {
+    const r = sampleLinear(cfg.start, cfg.goal, cfg.step);
+    list.push({ id:'LINEAR', label:'LINEAR', ...r });
+    return list;
+  }
+
+  const types=['LSL','RSR','LSR','RSL','RLR','LRL'];
+  for (const t of types) {
+    const base = sampleDubinsByType(cfg.start, cfg.goal, cfg.radius, cfg.step, t);
+    if (!base) continue;
+    if (cfg.algorithm === 'dubins') {
+      list.push({ id:t, label:t, ...base });
+    } else {
+      const cc = sampleCCDubinsFromBase(cfg.start, cfg.goal, cfg.radius, cfg.step, cfg.ccTransition, base);
+      list.push({ id:`CC_${t}`, label:`CC-${t}`, ...cc });
+    }
+  }
+
+  if (!list.length) {
+    list.push({ id:'1', label:'1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
+  }
+  return list;
+}
+
+function evaluatePathIntegrity(candidate, start, goal){
+  const pts = candidate.points || [];
+  if (!pts.length) {
+    return { startError: Infinity, endError: Infinity, maxStep: Infinity, connected: false };
+  }
+  let maxStep = 0;
+  for (let i=1;i<pts.length;i++){
+    const d = Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y);
+    if (d > maxStep) maxStep = d;
+  }
+  const startError = Math.hypot(pts[0].x-start.x, pts[0].y-start.y);
+  const endError = Math.hypot(pts[pts.length-1].x-goal.x, pts[pts.length-1].y-goal.y);
+  const connected = startError < 1e-6 && endError < 1e-6;
+  return { startError, endError, maxStep, connected };
+}
+
+function computeShortestIndex(paths){
+  let bestIdx = 0;
+  for (let i=1;i<paths.length;i++) {
+    if (paths[i].totalLength < paths[bestIdx].totalLength) bestIdx = i;
+  }
+  return bestIdx;
+}
+
+function buildPathListUI(){
+  const root = $('pathList');
+  root.innerHTML = '';
+  if (!state.result) return;
+
+  state.result.paths.forEach((p, i) => {
+    const row = document.createElement('div');
+    row.className = 'path-item';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.index = String(i);
+
+    if (state.shortestOnly) {
+      cb.checked = false;
+      cb.indeterminate = !!state.beforeShortestVisible[i];
+      cb.disabled = true;
+    } else {
+      cb.checked = !!p.visible;
+      cb.disabled = false;
+    }
+
+    cb.addEventListener('change', (e) => {
+      const idx = Number(e.target.dataset.index);
+      state.result.paths[idx].visible = e.target.checked;
+      render();
+    });
+
+    const label = document.createElement('label');
+    label.innerHTML = `<span class="path-name">${p.label || (i+1)}</span><span class="path-len">${Number.isFinite(p.totalLength)?formatNumber(p.totalLength)+' mm':'N/A'}</span>`;
+
+    row.appendChild(cb);
+    row.appendChild(label);
+    root.appendChild(row);
+  });
+
+  const btn = $('shortestOnlyBtn');
+  btn.classList.toggle('active', state.shortestOnly);
+  btn.textContent = `最短のみ表示: ${state.shortestOnly ? 'ON' : 'OFF'}`;
+}
+
+function applyShortestOnlyToggle(){
+  if (!state.result) return;
+  if (!state.shortestOnly) {
+    state.beforeShortestVisible = state.result.paths.map(p => !!p.visible);
+    const shortestIdx = computeShortestIndex(state.result.paths);
+    state.result.paths.forEach((p, idx) => { p.visible = idx === shortestIdx; });
+    state.shortestOnly = true;
+  } else {
+    state.result.paths.forEach((p, idx) => { p.visible = !!state.beforeShortestVisible[idx]; });
+    state.shortestOnly = false;
+  }
+  buildPathListUI();
+  render();
+}
+
+function recalculate(){
+  updateInputVisibility();
+  normalizeAngleInput('syaw');
+  normalizeAngleInput('gyaw');
+  const input = gatherInput();
+  state.invalidReasons = input.invalidReasons;
+  const wasShortestOnly = state.shortestOnly;
+  const prevBeforeShortestVisible = state.beforeShortestVisible.slice();
+
+  if (!input.valid) {
+    state.result = null;
+    buildPathListUI();
+    render();
+    return;
+  }
+
+  const cfg = input.cfg;
+  const paths = generateCandidates(cfg).map(p => ({
+    ...p,
+    visible: true,
+    integrity: evaluatePathIntegrity(p, cfg.start, cfg.goal),
+  }));
+  const shortestIdx = computeShortestIndex(paths);
+  paths.forEach((p, idx) => p.isShortest = idx === shortestIdx);
+
+  if (wasShortestOnly) {
+    state.shortestOnly = true;
+    state.beforeShortestVisible = paths.map((_, idx) => prevBeforeShortestVisible[idx] ?? true);
+    paths.forEach((p, idx) => { p.visible = idx === shortestIdx; });
+  } else {
+    state.shortestOnly = false;
+    state.beforeShortestVisible = [];
+  }
+  state.result = { cfg, paths, shortestIdx };
+
+  if (!state.camera.initialized) {
+    const allPoints = paths.flatMap(p => p.points);
+    fitView(allPoints.length ? allPoints : [{x:cfg.start.x,y:cfg.start.y},{x:cfg.goal.x,y:cfg.goal.y}], cfg.start, cfg.goal);
+  }
+  buildPathListUI();
+  render();
+}
+
+function formatNumber(v){
+  if (!Number.isFinite(v)) return 'N/A';
+  if (Math.abs(v) >= 100) return v.toFixed(1);
+  if (Math.abs(v) >= 10) return v.toFixed(2);
+  return v.toFixed(3);
+}
+
+function renderStats(){
+  const warn = $('warn');
+  const stats = $('stats');
+
+  if (state.invalidReasons.length) {
+    warn.textContent = '入力エラー中: パス生成は停止しています。';
+    stats.textContent = [
+      `エラー件数: ${state.invalidReasons.length}`,
+      ...state.invalidReasons.slice(0, 5),
+    ].join('\n');
+    return;
+  }
+
+  warn.textContent = '';
+  if (!state.result) {
+    stats.textContent = '結果なし';
+    return;
+  }
+
+  const { cfg, paths, shortestIdx } = state.result;
+  const visibleCount = paths.filter(p => p.visible).length;
+  const shortest = paths[shortestIdx];
+  const integrity = shortest?.integrity;
+  stats.textContent = [
+    `アルゴリズム: ${cfg.algorithm}`,
+    `候補数: ${paths.length}`,
+    `表示中候補: ${visibleCount}`,
+    `最短候補: ${shortest?.label ?? '-'}`,
+    `最短距離: ${Number.isFinite(shortest?.totalLength) ? formatNumber(shortest.totalLength) + ' mm' : 'N/A'}`,
+    `接続性(最短候補): ${integrity?.connected ? 'OK' : 'NG'}`,
+    `始点誤差/終点誤差: ${integrity ? `${formatNumber(integrity.startError)} / ${formatNumber(integrity.endError)} mm` : 'N/A'}`,
+    `視点スケール: ${state.camera.scale.toFixed(3)} px/mm`,
+    `Grid: ${formatNumber(gridStepForScale())} mm`,
+  ].join('\n');
+}
+
+function render(){
+  ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);
+
+  const cfg = state.result?.cfg;
+  drawGrid();
+
+  if (state.result) {
+    state.result.paths.forEach((p, i) => {
+      if (p.visible) drawPath(p, i, cfg.showPoints);
+    });
+    drawStartIcon(cfg.start, cfg);
+    drawGoalIcon(cfg.goal, cfg);
+  }
+
+  drawAxisGizmo();
+  renderStats();
+}
+
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.floor(r.width * dpr);
+  canvas.height = Math.floor(r.height * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  render();
+}
+window.addEventListener('resize', resize);
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const before = sw(mx, my);
+  const zoom = Math.exp(-e.deltaY * 0.0012);
+  state.camera.scale = clamp(state.camera.scale * zoom, 0.02, 220);
+  const after = sw(mx, my);
+  state.camera.cx += before.x - after.x;
+  state.camera.cy += before.y - after.y;
+  render();
+}, { passive:false });
+
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  state.isDragging = true;
+  canvas.classList.add('dragging');
+  state.lastMouse = { x: e.clientX, y: e.clientY };
+});
+
+window.addEventListener('mouseup', () => {
+  state.isDragging = false;
+  canvas.classList.remove('dragging');
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!state.isDragging) return;
+  const dx = e.clientX - state.lastMouse.x;
+  const dy = e.clientY - state.lastMouse.y;
+  state.camera.cx -= dx / state.camera.scale;
+  state.camera.cy += dy / state.camera.scale;
+  state.lastMouse = { x: e.clientX, y: e.clientY };
+  render();
+});
+
+['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','ccTransition','showPoints','showCurvature']
+  .forEach(id => {
+    $(id).addEventListener('input', recalculate);
+    $(id).addEventListener('change', recalculate);
+  });
+
+$('randomBtn').addEventListener('click', ()=>{
+  const r=(a,b)=> String(Math.round(Math.random()*(b-a)+a));
+  $('sx').value=r(-70,-10); $('sy').value=r(-40,40);
+  $('gx').value=r(10,70); $('gy').value=r(-40,40);
+  $('syaw').value=r(-180,180); $('gyaw').value=r(-180,180);
+  $('sk').value=r(-1,1);
+  $('gk').value=r(-1,1);
+  $('ccTransition').value=r(0,100);
+  state.camera.initialized = false;
+  recalculate();
+});
+
+$('fitBtn').addEventListener('click', ()=>{
+  if (!state.result) return;
+  const allPoints = state.result.paths.flatMap(p => p.points);
+  fitView(allPoints.length ? allPoints : [{x:state.result.cfg.start.x,y:state.result.cfg.start.y}], state.result.cfg.start, state.result.cfg.goal);
+  render();
+});
+
+$('shortestOnlyBtn').addEventListener('click', applyShortestOnlyToggle);
+
+recalculate();
+resize();
+</script>
+</body>
+</html>

@@ -273,7 +273,7 @@ function drawAxisGizmo(){
 }
 
 function drawHeadingArrow(originScreen, yaw, color){
-  const shaftLen = 22;
+  const shaftLen = 24; // 始点/終点点の直径(約12px)の2倍
   const headLen = 12; // 始点/終点点の直径(約12px)に合わせる
   const headOpen = Math.PI / 7;
   const ex = originScreen.x + shaftLen * Math.cos(yaw);

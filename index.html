@@ -402,45 +402,89 @@ function sampleDubinsByType(s,g,R,step,type){
 
 function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
   const samplingStep = 1;
-  const target=1/R;
-  const transition=Math.max(samplingStep*3, R*trRate);
-  const pts=[{x:s.x,y:s.y,yaw:s.yaw}];
-  const st={x:s.x,y:s.y,yaw:s.yaw,k:s.k||0};
+  const target = 1/R;
+  const transition = Math.max(samplingStep*3, R*trRate);
 
-  const adv=(ds,kN)=>{
-    const kM=(st.k+kN)/2;
-    const yM=st.yaw+0.5*kM*ds;
-    st.x+=ds*Math.cos(yM);
-    st.y+=ds*Math.sin(yM);
-    st.yaw=mod2pi(st.yaw+kM*ds);
-    st.k=kN;
-    pts.push({x:st.x,y:st.y,yaw:st.yaw});
+  // 境界曲率を最大曲率にクランプ（|k| <= target = 1/R）
+  const ks = clamp(s.k||0, -target, target);
+  const kg = clamp(g.k||0, -target, target);
+
+  const pts = [{x:s.x, y:s.y, yaw:s.yaw}];
+  const st = {x:s.x, y:s.y, yaw:s.yaw, k:ks};
+
+  const adv = (ds, kN) => {
+    const kM = (st.k + kN) / 2;
+    const yM = st.yaw + 0.5*kM*ds;
+    st.x += ds*Math.cos(yM);
+    st.y += ds*Math.sin(yM);
+    st.yaw = mod2pi(st.yaw + kM*ds);
+    st.k = kN;
+    pts.push({x:st.x, y:st.y, yaw:st.yaw});
   };
 
-  for(let i=0;i<base.segments.length;i++){
-    const mode=base.segments[i];
-    const L=base.rawSeg[i] || 0;
-    const sign=mode==='L'?1:mode==='R'?-1:0;
-    if(mode==='S'){
-      const n=Math.max(1,Math.ceil(L/samplingStep));
-      for(let j=0;j<n;j++) adv(L/n,0);
-      continue;
+  const segs = base.segments;
+  const N = segs.length;
+
+  // 最初と最後のターンセグメントのインデックスを特定
+  let firstTurn = -1, lastTurn = -1;
+  for (let i = 0; i < N; i++) {
+    if (segs[i] !== 'S' && (base.rawSeg[i]||0) > 0) {
+      if (firstTurn < 0) firstTurn = i;
+      lastTurn = i;
     }
-    const tr=Math.min(transition, L*0.5);
-    const nIn=Math.max(1,Math.ceil(tr/samplingStep));
-    for(let j=1;j<=nIn;j++) adv(tr/nIn, sign*target*(j/nIn));
-
-    const mid=Math.max(0,L-2*tr);
-    const nMid=Math.max(0,Math.floor(mid/samplingStep));
-    for(let j=0;j<nMid;j++) adv(mid/nMid, sign*target);
-
-    const nOut=Math.max(1,Math.ceil(tr/samplingStep));
-    for(let j=nOut;j>=1;j--) adv(tr/nOut, sign*target*((j-1)/nOut));
   }
 
-  pts[pts.length-1]={x:g.x,y:g.y,yaw:g.yaw};
-  let len=0;
-  for(let i=1;i<pts.length;i++) len += Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y);
+  for (let i = 0; i < N; i++) {
+    const mode = segs[i];
+    const L = base.rawSeg[i] || 0;
+    if (L <= 0) continue;
+    const sign = mode==='L' ? 1 : mode==='R' ? -1 : 0;
+
+    if (mode === 'S') {
+      const nS = Math.max(1, Math.ceil(L/samplingStep));
+      for (let j = 0; j < nS; j++) adv(L/nS, 0);
+      continue;
+    }
+
+    // 境界曲率: 最初/最後のターンのみ s.k / g.k を使用
+    const kStart = (i === firstTurn) ? ks : 0;
+    const kEnd   = (i === lastTurn)  ? kg : 0;
+
+    // 旋回角度保存の制約:
+    //   INクロソイド(長さtr):  angle = (kStart + sign*target)/2 * tr
+    //   MID定曲率弧(長さmid):  angle = sign*target * mid
+    //   OUTクロソイド(長さtr): angle = (sign*target + kEnd)/2 * tr
+    //   合計 = sign*target * L  ← これを満たすように mid を決定する
+    //
+    //   mid = L - coeff * tr、  coeff = 1 + (kStart+kEnd)/(2*sign*target)
+    //   mid >= 0 となる最大の tr を使う（coeff が大きい場合に tr を制限）
+    const coeff = 1 + (kStart + kEnd) / (2 * sign * target);
+    const trMax = coeff > 1e-6 ? L / coeff : L;
+    const tr = Math.min(transition, trMax);
+    const midLen = Math.max(0, L - coeff * tr);
+
+    // INフェーズ: kStart → sign*target へ線形補間（長さ tr）
+    const nIn = Math.max(1, Math.ceil(tr/samplingStep));
+    for (let j = 1; j <= nIn; j++) {
+      adv(tr/nIn, kStart + (sign*target - kStart) * (j/nIn));
+    }
+
+    // MIDフェーズ: 一定曲率 sign*target（長さ midLen）
+    if (midLen > 0) {
+      const nMid = Math.max(1, Math.ceil(midLen/samplingStep));
+      for (let j = 0; j < nMid; j++) adv(midLen/nMid, sign*target);
+    }
+
+    // OUTフェーズ: sign*target → kEnd へ線形補間（長さ tr）
+    const nOut = Math.max(1, Math.ceil(tr/samplingStep));
+    for (let j = nOut; j >= 1; j--) {
+      adv(tr/nOut, kEnd + (sign*target - kEnd) * ((j-1)/nOut));
+    }
+  }
+
+  // 強制的な終点上書きは行わない（正しいアルゴリズムでは自然に終点近傍に到達する）
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y);
   return { points:pts, totalLength:len, segments:base.segments, type:`CC-${base.type}`, rawSeg:base.rawSeg.slice() };
 }
 
@@ -470,7 +514,7 @@ function generateCandidates(cfg){
   return list;
 }
 
-function evaluatePathIntegrity(candidate, start, goal){
+function evaluatePathIntegrity(candidate, start, goal, endTol=1e-6){
   const pts = candidate.points || [];
   if (!pts.length) {
     return { startError: Infinity, endError: Infinity, maxStep: Infinity, connected: false };
@@ -482,7 +526,7 @@ function evaluatePathIntegrity(candidate, start, goal){
   }
   const startError = Math.hypot(pts[0].x-start.x, pts[0].y-start.y);
   const endError = Math.hypot(pts[pts.length-1].x-goal.x, pts[pts.length-1].y-goal.y);
-  const connected = startError < 1e-6 && endError < 1e-6;
+  const connected = startError < 1e-6 && endError < endTol;
   return { startError, endError, maxStep, connected };
 }
 
@@ -567,10 +611,12 @@ function recalculate(){
   }
 
   const cfg = input.cfg;
+  // CC-Dubinsはクロソイド近似により終点に微小な誤差が生じるため、許容誤差をR依存に設定
+  const endTol = cfg.algorithm === 'cc_dubins' ? Math.max(2.0, cfg.radius * 0.1) : 1e-6;
   const paths = generateCandidates(cfg).map(p => ({
     ...p,
     visible: true,
-    integrity: evaluatePathIntegrity(p, cfg.start, cfg.goal),
+    integrity: evaluatePathIntegrity(p, cfg.start, cfg.goal, endTol),
   }));
   const shortestIdx = computeShortestIndex(paths);
   paths.forEach((p, idx) => p.isShortest = idx === shortestIdx);

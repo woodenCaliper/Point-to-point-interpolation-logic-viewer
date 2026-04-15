@@ -75,8 +75,8 @@
 
     <div class="group">
       <h2>Path</h2>
-      <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" /></div>
-      <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="25" /></div>
+      <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" min="1" /></div>
+      <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="25" min="0" max="100" /></div>
     </div>
 
     <div class="row"><button id="randomBtn">ランダム</button></div>
@@ -152,6 +152,25 @@ function updateInputVisibility(){
   document.querySelectorAll('.only-theta').forEach(e => e.style.display = (algo === 'linear') ? 'none' : 'grid');
   document.querySelectorAll('.only-turn').forEach(e => e.style.display = (algo === 'linear') ? 'none' : 'grid');
   document.querySelectorAll('.only-curv').forEach(e => e.style.display = (algo === 'cc_dubins') ? 'grid' : 'none');
+}
+
+const INPUT_LIMITS = {
+  radius:       { min: 1 },
+  ccTransition: { min: 0, max: 100 },
+};
+
+function clampInputToLimits(id) {
+  const limits = INPUT_LIMITS[id];
+  if (!limits) return;
+  const el = $(id);
+  const raw = el.value.trim();
+  if (raw === '' || raw === '-') return;
+  const val = Number(raw);
+  if (!Number.isFinite(val)) return;
+  let clamped = val;
+  if (limits.min !== undefined) clamped = Math.max(limits.min, clamped);
+  if (limits.max !== undefined) clamped = Math.min(limits.max, clamped);
+  if (clamped !== val) el.value = String(clamped);
 }
 
 function parseField(id, validator){
@@ -702,8 +721,8 @@ window.addEventListener('mousemove', (e) => {
 
 ['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','ccTransition','showPoints','showCurvature']
   .forEach(id => {
-    $(id).addEventListener('input', recalculate);
-    $(id).addEventListener('change', recalculate);
+    $(id).addEventListener('input',  () => { clampInputToLimits(id); recalculate(); });
+    $(id).addEventListener('change', () => { clampInputToLimits(id); recalculate(); });
   });
 
 $('randomBtn').addEventListener('click', ()=>{

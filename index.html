@@ -53,34 +53,30 @@
     <div class="group">
       <h2>Start point</h2>
       <div class="row">
-        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="sx" type="number" step="10" value="-30" /></div>
-        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="sy" type="number" step="10" value="-20" /></div>
+        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="sx" type="number" step="1" value="-30" /></div>
+        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="sy" type="number" step="1" value="-20" /></div>
       </div>
-      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="syaw" type="number" step="5" value="20" /></div>
-      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="number" step="0.005" value="0.02" /></div>
+      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="syaw" type="number" step="1" value="20" /></div>
+      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="number" step="1" value="0" /></div>
     </div>
 
     <div class="group">
       <h2>End point</h2>
       <div class="row">
-        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="gx" type="number" step="10" value="45" /></div>
-        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="gy" type="number" step="10" value="30" /></div>
+        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="gx" type="number" step="1" value="45" /></div>
+        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="gy" type="number" step="1" value="30" /></div>
       </div>
-      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="gyaw" type="number" step="5" value="-35" /></div>
-      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="number" step="0.005" value="0.00" /></div>
+      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="gyaw" type="number" step="1" value="-35" /></div>
+      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="number" step="1" value="0" /></div>
     </div>
 
     <div class="group">
       <h2>Path</h2>
-      <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="10" value="12" /></div>
-      <div class="control"><label>サンプル間隔 <span class="unit">[mm]</span></label><input id="step" type="number" step="10" value="10" /></div>
-      <div class="control only-curv"><label>CC遷移率 <span class="unit">[-]</span></label><input id="ccTransition" type="number" step="0.05" value="0.25" /></div>
+      <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" /></div>
+      <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="25" /></div>
     </div>
 
-    <div class="row">
-      <button id="swapBtn">始終点を入替</button>
-      <button id="randomBtn">ランダム</button>
-    </div>
+    <div class="row"><button id="randomBtn">ランダム</button></div>
     <div class="control" style="margin-top:8px;"><button id="fitBtn">視点を再フィット</button></div>
   </aside>
 
@@ -93,7 +89,6 @@
     <div class="group">
       <h2>表示設定</h2>
       <div class="control"><label><input type="checkbox" id="showPoints" /> サンプル点</label></div>
-      <div class="control"><label><input type="checkbox" id="showHeading" checked /> 向き矢印</label></div>
       <div class="control"><label><input type="checkbox" id="showCurvature" checked /> 曲率ガイド</label></div>
       <div class="small">操作: ホイール=ズーム / 左ドラッグ=パン</div>
     </div>
@@ -160,7 +155,7 @@ function parseField(id, validator){
   const el = $(id);
   const raw = el.value.trim();
   const val = Number(raw);
-  const ok = raw.length > 0 && Number.isFinite(val) && (!validator || validator(val));
+  const ok = raw.length > 0 && Number.isFinite(val) && Number.isInteger(val) && (!validator || validator(val));
   el.classList.toggle('invalid', !ok);
   return ok ? val : null;
 }
@@ -171,7 +166,6 @@ function gatherInput(){
 
   const sx = parseField('sx'); const sy = parseField('sy');
   const gx = parseField('gx'); const gy = parseField('gy');
-  const step = parseField('step', v => v > 0);
 
   let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, ccTransition = 0.25;
 
@@ -181,10 +175,10 @@ function gatherInput(){
   }
   if (algorithm === 'cc_dubins') {
     sk = parseField('sk'); gk = parseField('gk');
-    ccTransition = parseField('ccTransition', v => v > 0 && v < 1);
+    ccTransition = parseField('ccTransition', v => v >= 0 && v <= 100);
   }
 
-  const required = { sx, sy, gx, gy, step };
+  const required = { sx, sy, gx, gy };
   if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw, radius });
   if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
 
@@ -197,10 +191,9 @@ function gatherInput(){
     start: { x: sx, y: sy, yaw: deg2rad(syaw || 0), k: sk || 0 },
     goal: { x: gx, y: gy, yaw: deg2rad(gyaw || 0), k: gk || 0 },
     radius,
-    step,
-    ccTransition,
+    step: 1,
+    ccTransition: (ccTransition || 0) / 100,
     showPoints: $('showPoints').checked,
-    showHeading: $('showHeading').checked,
     showCurvature: $('showCurvature').checked,
   };
 
@@ -306,7 +299,7 @@ function drawStartIcon(start,cfg){
   const p = ws(start.x,start.y);
   ctx.fillStyle='#22c55e'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
 
-  if (cfg.algorithm !== 'linear' && cfg.showHeading){
+  if (cfg.algorithm !== 'linear'){
     drawHeadingArrow(p, start.yaw, '#22c55e');
   }
 
@@ -325,7 +318,7 @@ function drawStartIcon(start,cfg){
 function drawGoalIcon(goal,cfg){
   const p = ws(goal.x,goal.y);
   ctx.fillStyle='#fb923c'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
-  if (cfg.algorithm !== 'linear' && cfg.showHeading){
+  if (cfg.algorithm !== 'linear'){
     drawHeadingArrow(p, goal.yaw, '#fb923c');
   }
 }
@@ -350,8 +343,8 @@ function drawPath(candidate, idx, showPoints){
 }
 
 function sampleLinear(s,g,step){
-  const fineStep = Math.max(step/5, 1e-3);
-  const dx=g.x-s.x, dy=g.y-s.y, dist=Math.hypot(dx,dy), n=Math.max(2,Math.ceil(dist/fineStep)+1), pts=[];
+  const samplingStep = 1;
+  const dx=g.x-s.x, dy=g.y-s.y, dist=Math.hypot(dx,dy), n=Math.max(2,Math.ceil(dist/samplingStep)+1), pts=[];
   for(let i=0;i<n;i++){ const t=i/(n-1); pts.push({x:s.x+dx*t,y:s.y+dy*t,yaw:Math.atan2(dy,dx)}); }
   return { points:pts, totalLength:dist, segments:['S'], type:'LINEAR', rawSeg:[dist] };
 }
@@ -375,7 +368,7 @@ function dubinsWord(x,y,phi,type){
 }
 
 function sampleDubinsByType(s,g,R,step,type){
-  const fineStep = Math.max(step/5, 1e-3);
+  const samplingStep = 1;
   const local=transformToLocal(s,g,R);
   const seg=dubinsWord(local.x,local.y,local.th,type);
   if(!seg) return null;
@@ -383,7 +376,7 @@ function sampleDubinsByType(s,g,R,step,type){
   const q={x:0,y:0,yaw:0}, list=[{...q}], modes=type.split('');
   const integ=(m,len)=>{
     const dir=m==='L'?1:m==='R'?-1:0;
-    const n=Math.max(1,Math.ceil((len*R)/fineStep));
+    const n=Math.max(1,Math.ceil((len*R)/samplingStep));
     const ds=len/n;
     for(let i=0;i<n;i++){
       if(dir===0){ q.x+=ds*Math.cos(q.yaw); q.y+=ds*Math.sin(q.yaw); }
@@ -405,9 +398,9 @@ function sampleDubinsByType(s,g,R,step,type){
 }
 
 function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
-  const fineStep = Math.max(step/5, 1e-3);
+  const samplingStep = 1;
   const target=1/R;
-  const transition=Math.max(fineStep*3, R*trRate);
+  const transition=Math.max(samplingStep*3, R*trRate);
   const pts=[{x:s.x,y:s.y,yaw:s.yaw}];
   const st={x:s.x,y:s.y,yaw:s.yaw,k:s.k||0};
 
@@ -426,19 +419,19 @@ function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
     const L=base.rawSeg[i] || 0;
     const sign=mode==='L'?1:mode==='R'?-1:0;
     if(mode==='S'){
-      const n=Math.max(1,Math.ceil(L/fineStep));
+      const n=Math.max(1,Math.ceil(L/samplingStep));
       for(let j=0;j<n;j++) adv(L/n,0);
       continue;
     }
     const tr=Math.min(transition, L*0.5);
-    const nIn=Math.max(1,Math.ceil(tr/fineStep));
+    const nIn=Math.max(1,Math.ceil(tr/samplingStep));
     for(let j=1;j<=nIn;j++) adv(tr/nIn, sign*target*(j/nIn));
 
     const mid=Math.max(0,L-2*tr);
-    const nMid=Math.max(0,Math.floor(mid/fineStep));
+    const nMid=Math.max(0,Math.floor(mid/samplingStep));
     for(let j=0;j<nMid;j++) adv(mid/nMid, sign*target);
 
-    const nOut=Math.max(1,Math.ceil(tr/fineStep));
+    const nOut=Math.max(1,Math.ceil(tr/samplingStep));
     for(let j=nOut;j>=1;j--) adv(tr/nOut, sign*target*((j-1)/nOut));
   }
 
@@ -704,27 +697,20 @@ window.addEventListener('mousemove', (e) => {
   render();
 });
 
-['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','step','ccTransition','showPoints','showHeading','showCurvature']
+['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','ccTransition','showPoints','showCurvature']
   .forEach(id => {
     $(id).addEventListener('input', recalculate);
     $(id).addEventListener('change', recalculate);
   });
 
-$('swapBtn').addEventListener('click', ()=>{
-  const s = ['sx','sy','syaw','sk'].map(id => $(id).value);
-  const g = ['gx','gy','gyaw','gk'].map(id => $(id).value);
-  ['sx','sy','syaw','sk'].forEach((id,i)=> $(id).value = g[i]);
-  ['gx','gy','gyaw','gk'].forEach((id,i)=> $(id).value = s[i]);
-  recalculate();
-});
-
 $('randomBtn').addEventListener('click', ()=>{
-  const r=(a,b)=> (Math.random()*(b-a)+a).toFixed(2);
+  const r=(a,b)=> String(Math.round(Math.random()*(b-a)+a));
   $('sx').value=r(-70,-10); $('sy').value=r(-40,40);
   $('gx').value=r(10,70); $('gy').value=r(-40,40);
   $('syaw').value=r(-180,180); $('gyaw').value=r(-180,180);
-  $('sk').value=(Math.random()*0.04-0.02).toFixed(3);
-  $('gk').value=(Math.random()*0.04-0.02).toFixed(3);
+  $('sk').value=r(-1,1);
+  $('gk').value=r(-1,1);
+  $('ccTransition').value=r(0,100);
   state.camera.initialized = false;
   recalculate();
 });

@@ -259,16 +259,42 @@ function drawAxisGizmo(){
   ctx.fillText(`Grid: ${formatNumber(mmStep)} mm`, ox+44, oy-9);
 }
 
+function drawHeadingArrow(originScreen, yaw, color){
+  const shaftLen = 22;
+  const headLen = 12; // 始点/終点点の直径(約12px)に合わせる
+  const headOpen = Math.PI / 7;
+  const ex = originScreen.x + shaftLen * Math.cos(yaw);
+  const ey = originScreen.y - shaftLen * Math.sin(yaw);
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(originScreen.x, originScreen.y);
+  ctx.lineTo(ex, ey);
+  ctx.stroke();
+
+  const a1 = yaw + Math.PI - headOpen;
+  const a2 = yaw + Math.PI + headOpen;
+  const hx1 = ex + headLen * Math.cos(a1);
+  const hy1 = ey - headLen * Math.sin(a1);
+  const hx2 = ex + headLen * Math.cos(a2);
+  const hy2 = ey - headLen * Math.sin(a2);
+
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(hx1, hy1);
+  ctx.lineTo(hx2, hy2);
+  ctx.closePath();
+  ctx.fill();
+}
+
 function drawStartIcon(start,cfg){
   const p = ws(start.x,start.y);
   ctx.fillStyle='#22c55e'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
 
   if (cfg.algorithm !== 'linear' && cfg.showHeading){
-    ctx.strokeStyle='#22c55e'; ctx.lineWidth=2;
-    const len=20;
-    const ex = p.x + len*Math.cos(start.yaw);
-    const ey = p.y - len*Math.sin(start.yaw);
-    ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(ex,ey); ctx.stroke();
+    drawHeadingArrow(p, start.yaw, '#22c55e');
   }
 
   if (cfg.algorithm === 'cc_dubins' && cfg.showCurvature && Math.abs(start.k) > 1e-8){
@@ -287,11 +313,7 @@ function drawGoalIcon(goal,cfg){
   const p = ws(goal.x,goal.y);
   ctx.fillStyle='#fb923c'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
   if (cfg.algorithm !== 'linear' && cfg.showHeading){
-    ctx.strokeStyle='#fb923c'; ctx.lineWidth=2;
-    const len=20;
-    const ex = p.x + len*Math.cos(goal.yaw);
-    const ey = p.y - len*Math.sin(goal.yaw);
-    ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(ex,ey); ctx.stroke();
+    drawHeadingArrow(p, goal.yaw, '#fb923c');
   }
 }
 
@@ -315,7 +337,8 @@ function drawPath(candidate, idx, showPoints){
 }
 
 function sampleLinear(s,g,step){
-  const dx=g.x-s.x, dy=g.y-s.y, dist=Math.hypot(dx,dy), n=Math.max(2,Math.ceil(dist/step)+1), pts=[];
+  const fineStep = Math.max(step/5, 1e-3);
+  const dx=g.x-s.x, dy=g.y-s.y, dist=Math.hypot(dx,dy), n=Math.max(2,Math.ceil(dist/fineStep)+1), pts=[];
   for(let i=0;i<n;i++){ const t=i/(n-1); pts.push({x:s.x+dx*t,y:s.y+dy*t,yaw:Math.atan2(dy,dx)}); }
   return { points:pts, totalLength:dist, segments:['S'], type:'LINEAR', rawSeg:[dist] };
 }
@@ -339,6 +362,7 @@ function dubinsWord(x,y,phi,type){
 }
 
 function sampleDubinsByType(s,g,R,step,type){
+  const fineStep = Math.max(step/5, 1e-3);
   const local=transformToLocal(s,g,R);
   const seg=dubinsWord(local.x,local.y,local.th,type);
   if(!seg) return null;
@@ -346,7 +370,7 @@ function sampleDubinsByType(s,g,R,step,type){
   const q={x:0,y:0,yaw:0}, list=[{...q}], modes=type.split('');
   const integ=(m,len)=>{
     const dir=m==='L'?1:m==='R'?-1:0;
-    const n=Math.max(1,Math.ceil((len*R)/step));
+    const n=Math.max(1,Math.ceil((len*R)/fineStep));
     const ds=len/n;
     for(let i=0;i<n;i++){
       if(dir===0){ q.x+=ds*Math.cos(q.yaw); q.y+=ds*Math.sin(q.yaw); }
@@ -368,8 +392,9 @@ function sampleDubinsByType(s,g,R,step,type){
 }
 
 function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
+  const fineStep = Math.max(step/5, 1e-3);
   const target=1/R;
-  const transition=Math.max(step*3, R*trRate);
+  const transition=Math.max(fineStep*3, R*trRate);
   const pts=[{x:s.x,y:s.y,yaw:s.yaw}];
   const st={x:s.x,y:s.y,yaw:s.yaw,k:s.k||0};
 
@@ -388,19 +413,19 @@ function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
     const L=base.rawSeg[i] || 0;
     const sign=mode==='L'?1:mode==='R'?-1:0;
     if(mode==='S'){
-      const n=Math.max(1,Math.ceil(L/step));
+      const n=Math.max(1,Math.ceil(L/fineStep));
       for(let j=0;j<n;j++) adv(L/n,0);
       continue;
     }
     const tr=Math.min(transition, L*0.5);
-    const nIn=Math.max(1,Math.ceil(tr/step));
+    const nIn=Math.max(1,Math.ceil(tr/fineStep));
     for(let j=1;j<=nIn;j++) adv(tr/nIn, sign*target*(j/nIn));
 
     const mid=Math.max(0,L-2*tr);
-    const nMid=Math.max(0,Math.floor(mid/step));
+    const nMid=Math.max(0,Math.floor(mid/fineStep));
     for(let j=0;j<nMid;j++) adv(mid/nMid, sign*target);
 
-    const nOut=Math.max(1,Math.ceil(tr/step));
+    const nOut=Math.max(1,Math.ceil(tr/fineStep));
     for(let j=nOut;j>=1;j--) adv(tr/nOut, sign*target*((j-1)/nOut));
   }
 

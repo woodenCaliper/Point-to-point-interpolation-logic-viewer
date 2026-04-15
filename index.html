@@ -92,7 +92,6 @@
     <h1>右ペイン: 表示 / 生成結果</h1>
     <div class="group">
       <h2>表示設定</h2>
-      <div class="control"><label><input type="checkbox" id="showGrid" checked /> グリッド</label></div>
       <div class="control"><label><input type="checkbox" id="showPoints" /> サンプル点</label></div>
       <div class="control"><label><input type="checkbox" id="showHeading" checked /> 向き矢印</label></div>
       <div class="control"><label><input type="checkbox" id="showCurvature" checked /> 曲率ガイド</label></div>
@@ -187,7 +186,6 @@ function gatherInput(){
     radius,
     step,
     ccTransition,
-    showGrid: $('showGrid').checked,
     showPoints: $('showPoints').checked,
     showHeading: $('showHeading').checked,
     showCurvature: $('showCurvature').checked,
@@ -575,7 +573,7 @@ function render(){
   ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);
 
   const cfg = state.result?.cfg;
-  if (cfg?.showGrid) drawGrid();
+  drawGrid();
 
   if (state.result) {
     state.result.paths.forEach((p, i) => {
@@ -635,7 +633,7 @@ window.addEventListener('mousemove', (e) => {
   render();
 });
 
-['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','step','ccTransition','showGrid','showPoints','showHeading','showCurvature']
+['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','step','ccTransition','showPoints','showHeading','showCurvature']
   .forEach(id => {
     $(id).addEventListener('input', recalculate);
     $(id).addEventListener('change', recalculate);

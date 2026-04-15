@@ -53,28 +53,28 @@
     <div class="group">
       <h2>Start point</h2>
       <div class="row">
-        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="sx" type="text" value="-30" /></div>
-        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="sy" type="text" value="-20" /></div>
+        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="sx" type="number" step="10" value="-30" /></div>
+        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="sy" type="number" step="10" value="-20" /></div>
       </div>
-      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="syaw" type="text" value="20" /></div>
-      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="text" value="0.02" /></div>
+      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="syaw" type="number" step="5" value="20" /></div>
+      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="number" step="0.005" value="0.02" /></div>
     </div>
 
     <div class="group">
       <h2>End point</h2>
       <div class="row">
-        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="gx" type="text" value="45" /></div>
-        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="gy" type="text" value="30" /></div>
+        <div class="control"><label>X <span class="unit">[mm]</span></label><input id="gx" type="number" step="10" value="45" /></div>
+        <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="gy" type="number" step="10" value="30" /></div>
       </div>
-      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="gyaw" type="text" value="-35" /></div>
-      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="text" value="0.00" /></div>
+      <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="gyaw" type="number" step="5" value="-35" /></div>
+      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="number" step="0.005" value="0.00" /></div>
     </div>
 
     <div class="group">
       <h2>Path</h2>
-      <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="text" value="12" /></div>
-      <div class="control"><label>サンプル間隔 <span class="unit">[mm]</span></label><input id="step" type="text" value="0.8" /></div>
-      <div class="control only-curv"><label>CC遷移率 <span class="unit">[-]</span></label><input id="ccTransition" type="text" value="0.25" /></div>
+      <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="10" value="12" /></div>
+      <div class="control"><label>サンプル間隔 <span class="unit">[mm]</span></label><input id="step" type="number" step="10" value="10" /></div>
+      <div class="control only-curv"><label>CC遷移率 <span class="unit">[-]</span></label><input id="ccTransition" type="number" step="0.05" value="0.25" /></div>
     </div>
 
     <div class="row">

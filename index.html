@@ -443,6 +443,19 @@ function sampleDubinsByType(s,g,R,step,type){
   return { points, totalLength, segments:modes, type, rawSeg:seg.map(v=>v*R) };
 }
 
+function sampleBestDubins(s,g,R,step,prefix=''){
+  const types=['LSL','RSR','LSR','RSL','RLR','LRL'];
+  let best=null;
+  for(const t of types){
+    const c=sampleDubinsByType(s,g,R,step,t);
+    if(!c) continue;
+    if(!best || c.totalLength < best.totalLength){
+      best = { ...c, id: `${prefix}${t}`, label: `${prefix}${t}` };
+    }
+  }
+  return best;
+}
+
 function sampleReedsSheppReverseOnlyByType(s,g,R,step,type){
   const sRev = { ...s, yaw: mod2pi(s.yaw + Math.PI) };
   const gRev = { ...g, yaw: mod2pi(g.yaw + Math.PI) };
@@ -454,6 +467,62 @@ function sampleReedsSheppReverseOnlyByType(s,g,R,step,type){
     segments: base.segments.map(m => m === 'S' ? 'S' : `${m}b`),
     type: `B-${type}`,
   };
+}
+
+function sampleReedsSheppOneCusp(s,g,R,step){
+  // 1-cusp Reeds-Shepp近似:
+  // 前進Dubins (start -> cusp) + 後退Dubins (cusp -> goal)
+  // 後退側は time-flip で forward Dubins として解き、反転して戻す。
+  const dx = g.x - s.x, dy = g.y - s.y;
+  const dist = Math.hypot(dx,dy);
+  const ux = dist > 1e-9 ? dx/dist : 1;
+  const uy = dist > 1e-9 ? dy/dist : 0;
+  const px = -uy, py = ux;
+
+  let best = null;
+  const lambdas = [0.2,0.35,0.5,0.65,0.8];
+  const offsets = [-1.0,-0.5,0,0.5,1.0];
+  const yawSamples = 24;
+
+  const gRevBase = { ...g, yaw: mod2pi(g.yaw + Math.PI) };
+
+  for(const l of lambdas){
+    for(const ofn of offsets){
+      const cx = s.x + dx*l + px*(R*ofn);
+      const cy = s.y + dy*l + py*(R*ofn);
+
+      for(let k=0;k<yawSamples;k++){
+        const yaw = (TAU * k) / yawSamples;
+        const cusp = { x:cx, y:cy, yaw };
+        const legF = sampleBestDubins(s, cusp, R, step, 'F-');
+        if(!legF) continue;
+
+        const cuspRev = { x:cx, y:cy, yaw:mod2pi(yaw + Math.PI) };
+        const legBForward = sampleBestDubins(gRevBase, cuspRev, R, step, 'B-');
+        if(!legBForward) continue;
+
+        const backPoints = legBForward.points
+          .slice()
+          .reverse()
+          .map(p => ({ ...p, yaw: mod2pi(p.yaw + Math.PI) }));
+        const points = legF.points.concat(backPoints.slice(1));
+        const totalLength = legF.totalLength + legBForward.totalLength;
+
+        if(!best || totalLength < best.totalLength){
+          best = {
+            id: 'RS_1CUSP',
+            label: 'RS-1CUSP',
+            points,
+            totalLength,
+            segments: [...legF.segments, 'CUSP', ...legBForward.segments.map(m => m === 'S' ? 'Sb' : `${m}b`)],
+            type: `RS-1CUSP(${legF.type}|${legBForward.type})`,
+            rawSeg: [...legF.rawSeg, ...legBForward.rawSeg],
+          };
+        }
+      }
+    }
+  }
+  return best;
 }
 
 function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
@@ -647,6 +716,8 @@ function generateCandidates(cfg){
       if (!rev) continue;
       list.push({ id:`B_${t}`, label:`B-${t}`, ...rev });
     }
+    const cusp = sampleReedsSheppOneCusp(cfg.start, cfg.goal, cfg.radius, cfg.step);
+    if (cusp) list.push(cusp);
   }
 
   if (!list.length) {

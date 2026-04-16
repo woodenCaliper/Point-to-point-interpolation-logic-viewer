@@ -454,13 +454,32 @@ function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
   const pts = [{x:s.x, y:s.y, yaw:s.yaw}];
   const st = {x:s.x, y:s.y, yaw:s.yaw, k:ks};
 
-  const adv = (ds, kN) => {
-    const kM = (st.k + kN) / 2;
-    const yM = st.yaw + 0.5*kM*ds;
-    st.x += ds*Math.cos(yM);
-    st.y += ds*Math.sin(yM);
-    st.yaw = mod2pi(st.yaw + kM*ds);
-    st.k = kN;
+  // Banzhaf系実装に合わせ、クロソイド区間は台形積分ではなく
+  // 弧長パラメータに対するテイラー展開で更新する。
+  // （k' = sigma が一定の区間を O(ds^5) で近似）
+  const advClothoidTaylor = (ds, sigma) => {
+    const c = Math.cos(st.yaw);
+    const si = Math.sin(st.yaw);
+    const k = st.k;
+    const ds2 = ds * ds;
+    const ds3 = ds2 * ds;
+    const ds4 = ds3 * ds;
+    const ds5 = ds4 * ds;
+
+    st.x += c*ds
+      - 0.5*k*si*ds2
+      + ((-sigma*si - k*k*c)/6)*ds3
+      + ((k*k*k*si - 3*k*sigma*c)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*c + 6*k*k*sigma*si)/120)*ds5;
+
+    st.y += si*ds
+      + 0.5*k*c*ds2
+      + ((sigma*c - k*k*si)/6)*ds3
+      + ((-k*k*k*c - 3*k*sigma*si)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*si - 6*k*k*sigma*c)/120)*ds5;
+
+    st.yaw = mod2pi(st.yaw + k*ds + 0.5*sigma*ds2);
+    st.k += sigma * ds;
     pts.push({x:st.x, y:st.y, yaw:st.yaw});
   };
 
@@ -484,7 +503,7 @@ function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
 
     if (mode === 'S') {
       const nS = Math.max(1, Math.ceil(L/samplingStep));
-      for (let j = 0; j < nS; j++) adv(L/nS, 0);
+      for (let j = 0; j < nS; j++) advClothoidTaylor(L/nS, 0);
       continue;
     }
 
@@ -506,21 +525,27 @@ function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
     const midLen = Math.max(0, L - coeff * tr);
 
     // INフェーズ: kStart → sign*target へ線形補間（長さ tr）
-    const nIn = Math.max(1, Math.ceil(tr/samplingStep));
-    for (let j = 1; j <= nIn; j++) {
-      adv(tr/nIn, kStart + (sign*target - kStart) * (j/nIn));
+    if (tr > 1e-12) {
+      const nIn = Math.max(1, Math.ceil(tr/samplingStep));
+      const sigmaIn = (sign*target - kStart) / tr;
+      for (let j = 0; j < nIn; j++) {
+        advClothoidTaylor(tr/nIn, sigmaIn);
+      }
     }
 
     // MIDフェーズ: 一定曲率 sign*target（長さ midLen）
     if (midLen > 0) {
       const nMid = Math.max(1, Math.ceil(midLen/samplingStep));
-      for (let j = 0; j < nMid; j++) adv(midLen/nMid, sign*target);
+      for (let j = 0; j < nMid; j++) advClothoidTaylor(midLen/nMid, 0);
     }
 
     // OUTフェーズ: sign*target → kEnd へ線形補間（長さ tr）
-    const nOut = Math.max(1, Math.ceil(tr/samplingStep));
-    for (let j = nOut; j >= 1; j--) {
-      adv(tr/nOut, kEnd + (sign*target - kEnd) * ((j-1)/nOut));
+    if (tr > 1e-12) {
+      const nOut = Math.max(1, Math.ceil(tr/samplingStep));
+      const sigmaOut = (kEnd - sign*target) / tr;
+      for (let j = 0; j < nOut; j++) {
+        advClothoidTaylor(tr/nOut, sigmaOut);
+      }
     }
   }
 

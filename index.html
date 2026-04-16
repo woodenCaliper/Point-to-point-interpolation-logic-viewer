@@ -49,6 +49,7 @@
       <select id="algorithm">
         <option value="linear">直線補間 (Linear)</option>
         <option value="dubins">Dubins Path</option>
+        <option value="reeds_shepp">Reeds-Shepp Path</option>
         <option value="cc_dubins">CC-Dubins Path</option>
       </select>
     </div>
@@ -442,6 +443,19 @@ function sampleDubinsByType(s,g,R,step,type){
   return { points, totalLength, segments:modes, type, rawSeg:seg.map(v=>v*R) };
 }
 
+function sampleReedsSheppReverseOnlyByType(s,g,R,step,type){
+  const sRev = { ...s, yaw: mod2pi(s.yaw + Math.PI) };
+  const gRev = { ...g, yaw: mod2pi(g.yaw + Math.PI) };
+  const base = sampleDubinsByType(sRev, gRev, R, step, type);
+  if (!base) return null;
+  return {
+    ...base,
+    points: base.points.map(p => ({ ...p, yaw: mod2pi(p.yaw + Math.PI) })),
+    segments: base.segments.map(m => m === 'S' ? 'S' : `${m}b`),
+    type: `B-${type}`,
+  };
+}
+
 function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
   const samplingStep = 1;
   const target = 1/R;
@@ -619,9 +633,19 @@ function generateCandidates(cfg){
     if (!base) continue;
     if (cfg.algorithm === 'dubins') {
       list.push({ id:t, label:t, ...base });
+    } else if (cfg.algorithm === 'reeds_shepp') {
+      list.push({ id:`F_${t}`, label:`F-${t}`, ...base });
     } else {
       const cc = refineCCDubins(cfg.start, cfg.goal, cfg.radius, cfg.ccTransition, base);
       list.push({ id:`CC_${t}`, label:`CC-${t}`, ...cc });
+    }
+  }
+
+  if (cfg.algorithm === 'reeds_shepp') {
+    for (const t of types) {
+      const rev = sampleReedsSheppReverseOnlyByType(cfg.start, cfg.goal, cfg.radius, cfg.step, t);
+      if (!rev) continue;
+      list.push({ id:`B_${t}`, label:`B-${t}`, ...rev });
     }
   }
 

@@ -6,7 +6,8 @@
 ## 必須実装
 1. 直線補間（Linear Interpolation）
 2. Dubins Path
-3. CC-Dubins Path
+3. Reeds-Shepp Path
+4. CC-Dubins Path
 
 > 今後、経路生成ロジックは追加される可能性がある。
 
@@ -75,6 +76,10 @@
 - CC-Dubins は「比較用の近似」ではなく、**実装方式まで厳密に定義したもの**を採用する。
 - CC-Dubins 実装の参照ソースは、**Holger Banzhaf らの `steering_functions`** とする。
 
+### Reeds-Shepp
+- Reeds-Shepp は**前進・後退の両方向を許容する経路**として扱う。
+- 候補リスト表示名は、前進系/後退系が識別できる形式（例: `F-RSR` / `B-RSR`）を許容する。
+
 ### GitHub Pages 公開ルール
 - GitHub Pages への公開方法は、できるだけ **GitHub公式かつ一般的な方法**に則る。
 
@@ -104,6 +109,7 @@
 - NG値入力時に該当欄が赤枠表示される。
 - NG値が入力欄に残っている間、パス生成は実行されない。
 - 入力変更が即時にパスへ反映される（生成ボタンなし）。
+- Reeds-Shepp（前進/後退を含む候補）が選択・表示できる。
 - CC-Dubins が厳密定義の方式で実装される。
 - CC-Dubins の参照ソースが Holger Banzhaf らの `steering_functions` である。
 - GitHub Pages 上で動作確認できる。

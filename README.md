@@ -1,6 +1,6 @@
 # Point-to-point-interpolation-logic-viewer
 
-2D の点から点への補間ロジック（Linear / Dubins / CC-Dubins）を比較できる、単一HTMLビューアです。
+2D の点から点への補間ロジック（Linear / Dubins / Reeds-Shepp / CC-Dubins）を比較できる、単一HTMLビューアです。
 
 ## 使い方
 1. `index.html` をブラウザで開く。

@@ -32,10 +32,9 @@
     .path-item { display:flex; gap:8px; align-items:center; padding:4px 0; border-bottom:1px dashed #243041; }
     .path-item input[type="checkbox"] { width:auto; padding:0; margin:0; }
     .path-item:last-child { border-bottom:none; }
-    .path-item.is-shortest .path-name,
-    .path-item.is-shortest .path-len { font-weight:900; }
-    .path-name.is-shortest,
-    .path-len.is-shortest { font-weight:900; }
+    .path-item.is-shortest { background:#1b2a3d; border-radius:6px; padding:6px 4px; }
+    .path-item.is-shortest .path-name { color:#ffffff; }
+    .path-item.is-shortest .path-len { color:#cfe4ff; }
     .path-item label { flex:1; display:flex; justify-content:space-between; gap:8px; align-items:center; }
     .path-name { color:#dbe8f8; }
     .path-len { color:#8fb6dd; font-size:11px; }
@@ -827,8 +826,7 @@ function buildPathListUI(){
     });
 
     const label = document.createElement('label');
-    const shortestClass = p.isShortest ? ' is-shortest' : '';
-    label.innerHTML = `<span class="path-name${shortestClass}">${p.label || (i+1)}</span><span class="path-len${shortestClass}">${Number.isFinite(p.totalLength)?formatNumber(p.totalLength)+' mm':'N/A'}</span>`;
+    label.innerHTML = `<span class="path-name">${p.label || (i+1)}</span><span class="path-len">${Number.isFinite(p.totalLength)?formatNumber(p.totalLength)+' mm':'N/A'}</span>`;
 
     row.appendChild(cb);
     row.appendChild(label);

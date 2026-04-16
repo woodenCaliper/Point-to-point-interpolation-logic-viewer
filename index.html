@@ -33,9 +33,9 @@
     .path-item input[type="checkbox"] { width:auto; padding:0; margin:0; }
     .path-item:last-child { border-bottom:none; }
     .path-item.is-shortest .path-name,
-    .path-item.is-shortest .path-len { font-weight:700; }
+    .path-item.is-shortest .path-len { font-weight:900; }
     .path-name.is-shortest,
-    .path-len.is-shortest { font-weight:700; }
+    .path-len.is-shortest { font-weight:900; }
     .path-item label { flex:1; display:flex; justify-content:space-between; gap:8px; align-items:center; }
     .path-name { color:#dbe8f8; }
     .path-len { color:#8fb6dd; font-size:11px; }
@@ -805,7 +805,7 @@ function buildPathListUI(){
   state.result.paths.forEach((p, i) => {
     const row = document.createElement('div');
     row.className = 'path-item';
-    row.classList.toggle('is-shortest', state.shortestOnly && !!p.isShortest);
+    row.classList.toggle('is-shortest', !!p.isShortest);
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
@@ -827,7 +827,7 @@ function buildPathListUI(){
     });
 
     const label = document.createElement('label');
-    const shortestClass = state.shortestOnly && p.isShortest ? ' is-shortest' : '';
+    const shortestClass = p.isShortest ? ' is-shortest' : '';
     label.innerHTML = `<span class="path-name${shortestClass}">${p.label || (i+1)}</span><span class="path-len${shortestClass}">${Number.isFinite(p.totalLength)?formatNumber(p.totalLength)+' mm':'N/A'}</span>`;
 
     row.appendChild(cb);

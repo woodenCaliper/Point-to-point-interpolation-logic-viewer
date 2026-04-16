@@ -34,6 +34,8 @@
     .path-item:last-child { border-bottom:none; }
     .path-item.is-shortest .path-name,
     .path-item.is-shortest .path-len { font-weight:700; }
+    .path-name.is-shortest,
+    .path-len.is-shortest { font-weight:700; }
     .path-item label { flex:1; display:flex; justify-content:space-between; gap:8px; align-items:center; }
     .path-name { color:#dbe8f8; }
     .path-len { color:#8fb6dd; font-size:11px; }
@@ -825,7 +827,8 @@ function buildPathListUI(){
     });
 
     const label = document.createElement('label');
-    label.innerHTML = `<span class="path-name">${p.label || (i+1)}</span><span class="path-len">${Number.isFinite(p.totalLength)?formatNumber(p.totalLength)+' mm':'N/A'}</span>`;
+    const shortestClass = state.shortestOnly && p.isShortest ? ' is-shortest' : '';
+    label.innerHTML = `<span class="path-name${shortestClass}">${p.label || (i+1)}</span><span class="path-len${shortestClass}">${Number.isFinite(p.totalLength)?formatNumber(p.totalLength)+' mm':'N/A'}</span>`;
 
     row.appendChild(cb);
     row.appendChild(label);

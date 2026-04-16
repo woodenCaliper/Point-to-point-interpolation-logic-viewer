@@ -49,6 +49,7 @@
       <select id="algorithm">
         <option value="linear">直線補間 (Linear)</option>
         <option value="dubins">Dubins Path</option>
+        <option value="reeds_shepp">Reeds-Shepp Path</option>
         <option value="cc_dubins">CC-Dubins Path</option>
       </select>
     </div>
@@ -442,6 +443,137 @@ function sampleDubinsByType(s,g,R,step,type){
   return { points, totalLength, segments:modes, type, rawSeg:seg.map(v=>v*R) };
 }
 
+function rsSimulateNormalized(word, gears, lengths, samplingStep = 0){
+  const q = { x:0, y:0, yaw:0 };
+  const points = samplingStep > 0 ? [{...q}] : null;
+
+  const pushStep = (ds, turnSign) => {
+    if (Math.abs(turnSign) < 1e-12){
+      q.x += ds * Math.cos(q.yaw);
+      q.y += ds * Math.sin(q.yaw);
+      return;
+    }
+    const y2 = q.yaw + turnSign * ds;
+    q.x += (Math.sin(y2) - Math.sin(q.yaw)) / turnSign;
+    q.y += (-Math.cos(y2) + Math.cos(q.yaw)) / turnSign;
+    q.yaw = y2;
+  };
+
+  for (let i=0;i<word.length;i++){
+    const steer = word[i] === 'L' ? 1 : word[i] === 'R' ? -1 : 0;
+    const dsTotal = gears[i] * lengths[i];
+    if (Math.abs(dsTotal) < 1e-12) continue;
+    if (samplingStep <= 0){
+      pushStep(dsTotal, steer);
+      continue;
+    }
+    const n = Math.max(1, Math.ceil(Math.abs(dsTotal) / samplingStep));
+    const ds = dsTotal / n;
+    for (let k=0;k<n;k++){
+      pushStep(ds, steer);
+      points.push({...q});
+    }
+  }
+
+  return { end:{ x:q.x, y:q.y, yaw:angleWrap(q.yaw) }, points };
+}
+
+function solveReedsSheppByNewton(localGoal, word, gears, seed){
+  const L = seed.slice();
+  const maxIter = 40;
+  const eps = 1e-4;
+
+  for (let iter=0; iter<maxIter; iter++){
+    const end = rsSimulateNormalized(word, gears, L, 0).end;
+    const err = [localGoal.x - end.x, localGoal.y - end.y, angleWrap(localGoal.th - end.yaw)];
+    if (Math.hypot(err[0], err[1]) < 1e-3 && Math.abs(err[2]) < 1e-3) return L;
+
+    const J = [[0,0,0],[0,0,0],[0,0,0]];
+    for(let j=0;j<3;j++){
+      const Lp = L.slice();
+      Lp[j] += eps;
+      const ep = rsSimulateNormalized(word, gears, Lp, 0).end;
+      J[0][j] = (ep.x - end.x) / eps;
+      J[1][j] = (ep.y - end.y) / eps;
+      J[2][j] = angleWrap(ep.yaw - end.yaw) / eps;
+    }
+    const d = solve3x3(J, err);
+    if (!d) return null;
+    const norm = Math.hypot(d[0], d[1], d[2]);
+    const gain = norm > 2.0 ? 2.0 / norm : 1.0;
+    for (let j=0;j<3;j++) L[j] = clamp(L[j] + gain * d[j], 0, 80);
+  }
+  return null;
+}
+
+function toGlobalPoseFromLocal(s, R, p){
+  const c = Math.cos(s.yaw), si = Math.sin(s.yaw);
+  return {
+    x: s.x + R * (c * p.x - si * p.y),
+    y: s.y + R * (si * p.x + c * p.y),
+    yaw: mod2pi(s.yaw + p.yaw),
+  };
+}
+
+function sampleReedsSheppPath(s, g, R, step, word, gears, lengths){
+  const samplingStep = 1;
+  const normalizedStep = samplingStep / R;
+  const sim = rsSimulateNormalized(word, gears, lengths, normalizedStep);
+  const points = sim.points.map(p => toGlobalPoseFromLocal(s, R, p));
+  const rawSeg = lengths.map((v, i) => v * R * gears[i]);
+  const totalLength = lengths.reduce((acc, v) => acc + v * R, 0);
+  const segLabel = word.split('').map((m, i) => `${gears[i] > 0 ? 'F' : 'B'}-${m}`);
+  return { points, totalLength, segments:segLabel, type:`RS-${word}`, rawSeg };
+}
+
+function generateReedsSheppCandidates(cfg){
+  const local = transformToLocal(cfg.start, cfg.goal, cfg.radius);
+  const d = Math.hypot(local.x, local.y);
+  const words = [];
+  const symbols = ['L','R','S'];
+  for (const a of symbols){
+    for (const b of symbols){
+      for (const c of symbols){
+        const w = `${a}${b}${c}`;
+        if (w === 'SSS') continue;
+        if (a===b || b===c) continue;
+        if (!w.includes('L') && !w.includes('R')) continue;
+        words.push(w);
+      }
+    }
+  }
+  const gearPatterns = [
+    [1,1,1],[1,1,-1],[1,-1,1],[1,-1,-1],
+    [-1,1,1],[-1,1,-1],[-1,-1,1],[-1,-1,-1]
+  ];
+  const seeds = [
+    [Math.max(0.2, d/3), Math.max(0.2, d/3), Math.max(0.2, d/3)],
+    [Math.max(0.2, d), 0.2, 0.2],
+    [0.2, Math.max(0.2, d), 0.2],
+    [0.2, 0.2, Math.max(0.2, d)],
+    [Math.PI/2, Math.max(0.2, d/2), Math.PI/2],
+  ];
+
+  const list = [];
+  const seen = new Set();
+  for (const w of words){
+    for (const gp of gearPatterns){
+      for (const seed of seeds){
+        const sol = solveReedsSheppByNewton(local, w, gp, seed);
+        if (!sol) continue;
+        const end = rsSimulateNormalized(w, gp, sol, 0).end;
+        if (Math.hypot(end.x-local.x, end.y-local.y) > 2e-2 || Math.abs(angleWrap(end.yaw-local.th)) > 2e-2) continue;
+        const path = sampleReedsSheppPath(cfg.start, cfg.goal, cfg.radius, cfg.step, w, gp, sol);
+        const key = path.rawSeg.map(v => v.toFixed(3)).join(',');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        list.push({ id:`RS_${w}_${gp.join('')}_${list.length+1}`, label:`RS-${w}`, ...path });
+      }
+    }
+  }
+  return list;
+}
+
 function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
   const samplingStep = 1;
   const target = 1/R;
@@ -612,6 +744,12 @@ function generateCandidates(cfg){
     list.push({ id:'LINEAR', label:'LINEAR', ...r });
     return list;
   }
+  if (cfg.algorithm === 'reeds_shepp') {
+    const rs = generateReedsSheppCandidates(cfg);
+    if (rs.length) return rs;
+    list.push({ id:'RS_1', label:'RS-1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
+    return list;
+  }
 
   const types=['LSL','RSR','LSR','RSL','RLR','LRL'];
   for (const t of types) {
@@ -729,7 +867,9 @@ function recalculate(){
 
   const cfg = input.cfg;
   // CC-Dubinsはクロソイド近似により終点に微小な誤差が生じるため、許容誤差をR依存に設定
-  const endTol = cfg.algorithm === 'cc_dubins' ? Math.max(2.0, cfg.radius * 0.1) : 1e-6;
+  const endTol = cfg.algorithm === 'cc_dubins'
+    ? Math.max(2.0, cfg.radius * 0.1)
+    : (cfg.algorithm === 'reeds_shepp' ? 0.2 : 1e-6);
   const paths = generateCandidates(cfg).map(p => ({
     ...p,
     visible: true,

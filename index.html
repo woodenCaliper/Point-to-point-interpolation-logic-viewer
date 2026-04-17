@@ -543,54 +543,203 @@ function sampleReedsSheppPath(s, g, R, step, word, gears, lengths){
   return { points, totalLength, segments:segLabel, type:`RS-${word}`, rawSeg };
 }
 
-function generateReedsSheppCandidates(cfg){
-  const local = transformToLocal(cfg.start, cfg.goal, cfg.radius);
-  const d = Math.hypot(local.x, local.y);
-  const words = [];
-  const symbols = ['L','R','S'];
-  for (const a of symbols){
-    for (const b of symbols){
-      for (const c of symbols){
-        const w = `${a}${b}${c}`;
-        if (w === 'SSS') continue;
-        if (a===b || b===c) continue;
-        if (!w.includes('L') && !w.includes('R')) continue;
-        words.push(w);
+function rsPolar(x, y){
+  return { r: Math.hypot(x, y), theta: Math.atan2(y, x) };
+}
+
+function rsBuildLabel(modes, lengths, prefix = 'RS'){
+  const modeCode = (modes || []).join('');
+  const dirCode = (lengths || []).map(v => v >= 0 ? 'F' : 'B').join('');
+  return `${prefix}-${modeCode}${dirCode ? `-${dirCode}` : ''}`;
+}
+
+function sampleReedsSheppByModesAndLengths(s, R, modes, lengths){
+  const q = { x:0, y:0, yaw:0 };
+  const points = [{ ...q }];
+  const samplingStep = 1;
+  for (let i=0;i<modes.length;i++){
+    const mode = modes[i];
+    const L = lengths[i];
+    if (!Number.isFinite(L) || Math.abs(L) < 1e-9) continue;
+    const turnSign = mode === 'L' ? 1 : mode === 'R' ? -1 : 0;
+    const n = Math.max(1, Math.ceil(Math.abs(L * R) / samplingStep));
+    const ds = L / n;
+    for (let k=0;k<n;k++){
+      if (Math.abs(turnSign) < 1e-12){
+        q.x += ds * Math.cos(q.yaw);
+        q.y += ds * Math.sin(q.yaw);
+      } else {
+        const y2 = q.yaw + turnSign * ds;
+        q.x += (Math.sin(y2) - Math.sin(q.yaw)) / turnSign;
+        q.y += (-Math.cos(y2) + Math.cos(q.yaw)) / turnSign;
+        q.yaw = y2;
       }
+      points.push({ ...q });
     }
   }
-  const gearPatterns = [
-    [1,1,1],[1,1,-1],[1,-1,1],[1,-1,-1],
-    [-1,1,1],[-1,1,-1],[-1,-1,1],[-1,-1,-1]
-  ];
-  const seeds = [
-    [Math.max(0.2, d/3), Math.max(0.2, d/3), Math.max(0.2, d/3)],
-    [Math.max(0.2, d), 0.2, 0.2],
-    [0.2, Math.max(0.2, d), 0.2],
-    [0.2, 0.2, Math.max(0.2, d)],
-    [Math.PI/2, Math.max(0.2, d/2), Math.PI/2],
-  ];
+  const c = Math.cos(s.yaw), si = Math.sin(s.yaw);
+  const global = points.map(p => ({
+    x: s.x + R * (c * p.x - si * p.y),
+    y: s.y + R * (si * p.x + c * p.y),
+    yaw: mod2pi(s.yaw + p.yaw),
+  }));
+  const rawSeg = lengths.map(v => v * R);
+  const totalLength = lengths.reduce((a, v) => a + Math.abs(v) * R, 0);
+  const segments = modes.map((m, i) => `${lengths[i] >= 0 ? 'F' : 'B'}-${m}`);
+  return { points:global, totalLength, segments, rawSeg };
+}
+
+function rsSetPath(paths, lengths, ctypes){
+  const L = lengths.reduce((s, v) => s + Math.abs(v), 0);
+  if (L < 0.01) return paths;
+  for (const p of paths){
+    const sameType = p.ctypes.length === ctypes.length && p.ctypes.every((c, i) => c === ctypes[i]);
+    if (!sameType) continue;
+    const d = p.lengths.reduce((s, v) => s + Math.abs(v), 0) - L;
+    if (d <= 0.01) return paths;
+  }
+  paths.push({ ctypes:ctypes.slice(), lengths:lengths.slice(), L });
+  return paths;
+}
+
+function rsStraightLeftStraight(x, y, phi){
+  const p = mod2pi(phi);
+  if (y > 0 && p > 0 && p < Math.PI * 0.99){
+    const xd = -y / Math.tan(p) + x;
+    const t = xd - Math.tan(p / 2);
+    const u = p;
+    const v = Math.hypot(x - xd, y) - Math.tan(p / 2);
+    return [true, t, u, v];
+  }
+  if (y < 0 && p > 0 && p < Math.PI * 0.99){
+    const xd = -y / Math.tan(p) + x;
+    const t = xd - Math.tan(p / 2);
+    const u = p;
+    const v = -Math.hypot(x - xd, y) - Math.tan(p / 2);
+    return [true, t, u, v];
+  }
+  return [false, 0, 0, 0];
+}
+
+function rsLeftStraightLeft(x, y, phi){
+  const [u, t] = [rsPolar(x - Math.sin(phi), y - 1 + Math.cos(phi)).r, rsPolar(x - Math.sin(phi), y - 1 + Math.cos(phi)).theta];
+  if (t >= 0){
+    const v = mod2pi(phi - t);
+    if (v >= 0) return [true, t, u, v];
+  }
+  return [false, 0, 0, 0];
+}
+
+function rsLeftStraightRight(x, y, phi){
+  const p = rsPolar(x + Math.sin(phi), y - 1 - Math.cos(phi));
+  const u1 = p.r * p.r;
+  if (u1 >= 4){
+    const u = Math.sqrt(u1 - 4);
+    const theta = Math.atan2(2, u);
+    const t = mod2pi(p.theta + theta);
+    const v = mod2pi(t - phi);
+    if (t >= 0 && v >= 0) return [true, t, u, v];
+  }
+  return [false, 0, 0, 0];
+}
+
+function rsLeftRightLeft(x, y, phi){
+  const p = rsPolar(x - Math.sin(phi), y - 1 + Math.cos(phi));
+  if (p.r <= 4){
+    const u = -2 * Math.asin(0.25 * p.r);
+    const t = mod2pi(p.theta + 0.5 * u + Math.PI);
+    const v = mod2pi(phi - t + u);
+    if (t >= 0 && u <= 0) return [true, t, u, v];
+  }
+  return [false, 0, 0, 0];
+}
+
+function rsStraightCurveStraight(x, y, phi, paths){
+  let ok, t, u, v;
+  [ok, t, u, v] = rsStraightLeftStraight(x, y, phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['S', 'L', 'S']);
+  [ok, t, u, v] = rsStraightLeftStraight(x, -y, -phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['S', 'R', 'S']);
+  return paths;
+}
+
+function rsCurveStraightCurve(x, y, phi, paths){
+  let ok, t, u, v;
+  [ok, t, u, v] = rsLeftStraightLeft(x, y, phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['L', 'S', 'L']);
+  [ok, t, u, v] = rsLeftStraightLeft(-x, y, -phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['L', 'S', 'L']);
+  [ok, t, u, v] = rsLeftStraightLeft(x, -y, -phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['R', 'S', 'R']);
+  [ok, t, u, v] = rsLeftStraightLeft(-x, -y, phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['R', 'S', 'R']);
+
+  [ok, t, u, v] = rsLeftStraightRight(x, y, phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['L', 'S', 'R']);
+  [ok, t, u, v] = rsLeftStraightRight(-x, y, -phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['L', 'S', 'R']);
+  [ok, t, u, v] = rsLeftStraightRight(x, -y, -phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['R', 'S', 'L']);
+  [ok, t, u, v] = rsLeftStraightRight(-x, -y, phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['R', 'S', 'L']);
+  return paths;
+}
+
+function rsCurveCurveCurve(x, y, phi, paths){
+  let ok, t, u, v;
+  [ok, t, u, v] = rsLeftRightLeft(x, y, phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['L', 'R', 'L']);
+  [ok, t, u, v] = rsLeftRightLeft(-x, y, -phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['L', 'R', 'L']);
+  [ok, t, u, v] = rsLeftRightLeft(x, -y, -phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['R', 'L', 'R']);
+  [ok, t, u, v] = rsLeftRightLeft(-x, -y, phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['R', 'L', 'R']);
+
+  const xb = x * Math.cos(phi) + y * Math.sin(phi);
+  const yb = x * Math.sin(phi) - y * Math.cos(phi);
+  [ok, t, u, v] = rsLeftRightLeft(xb, yb, phi);
+  if (ok) paths = rsSetPath(paths, [v, u, t], ['L', 'R', 'L']);
+  [ok, t, u, v] = rsLeftRightLeft(-xb, yb, -phi);
+  if (ok) paths = rsSetPath(paths, [-v, -u, -t], ['L', 'R', 'L']);
+  [ok, t, u, v] = rsLeftRightLeft(xb, -yb, -phi);
+  if (ok) paths = rsSetPath(paths, [v, u, t], ['R', 'L', 'R']);
+  [ok, t, u, v] = rsLeftRightLeft(-xb, -yb, phi);
+  if (ok) paths = rsSetPath(paths, [-v, -u, -t], ['R', 'L', 'R']);
+  return paths;
+}
+
+function generateReedsSheppCandidatesReference(cfg){
+  const local = transformToLocal(cfg.start, cfg.goal, cfg.radius);
+  const x = local.x, y = local.y, phi = local.th;
+
+  let rsPaths = [];
+  rsPaths = rsStraightCurveStraight(x, y, phi, rsPaths);
+  rsPaths = rsCurveStraightCurve(x, y, phi, rsPaths);
+  rsPaths = rsCurveCurveCurve(x, y, phi, rsPaths);
 
   const list = [];
   const seen = new Set();
-  for (const w of words){
-    for (const gp of gearPatterns){
-      for (const seed of seeds){
-        const sol = solveReedsSheppByNewton(local, w, gp, seed);
-        if (!sol) continue;
-        const end = rsSimulateNormalized(w, gp, sol, 0).end;
-        if (Math.hypot(end.x-local.x, end.y-local.y) > 2e-2 || Math.abs(angleWrap(end.yaw-local.th)) > 2e-2) continue;
-        const path = sampleReedsSheppPath(cfg.start, cfg.goal, cfg.radius, cfg.step, w, gp, sol);
-        const key = path.rawSeg.map(v => v.toFixed(3)).join(',');
-        if (seen.has(key)) continue;
-        seen.add(key);
-        list.push({ id:`RS_${w}_${gp.join('')}_${list.length+1}`, label:`RS-${w}`, ...path });
-      }
-    }
-  }
-  return list;
-}
+  for (const p of rsPaths){
+    const path = sampleReedsSheppByModesAndLengths(cfg.start, cfg.radius, p.ctypes, p.lengths);
+    const end = path.points[path.points.length - 1];
+    if (!end) continue;
+    const posErr = Math.hypot(end.x - cfg.goal.x, end.y - cfg.goal.y);
+    const yawErr = Math.abs(angleWrap(end.yaw - cfg.goal.yaw));
+    if (posErr > 1.0 || yawErr > deg2rad(2.0)) continue;
 
+    const key = `${p.ctypes.join('')}:${path.rawSeg.map(v => v.toFixed(3)).join(',')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push({
+      id:`RS_REF_${list.length+1}`,
+      label: rsBuildLabel(p.ctypes, p.lengths, 'RS-REF'),
+      ...path,
+      type:'RS-REFERENCE',
+    });
+  }
+  return list.sort((a,b) => a.totalLength - b.totalLength);
+}
 
 function integrateClothoidNormalized(k0, sigma, length, samplingStep = 1){
   const pts = [{ x:0, y:0, yaw:0, s:0, k:k0 }];
@@ -993,8 +1142,8 @@ function generateCandidates(cfg){
     return list;
   }
   if (cfg.algorithm === 'reeds_shepp') {
-    const rs = generateReedsSheppCandidates(cfg);
-    if (rs.length) return rs;
+    const rsReference = generateReedsSheppCandidatesReference(cfg);
+    if (rsReference.length) return rsReference;
     list.push({ id:'RS_1', label:'RS-1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
     return list;
   }

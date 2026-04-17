@@ -44,6 +44,7 @@
     .path-item.shortest .path-len { color:#beddff; }
     #shortestOnlyBtn.active { border-color:#5ba6ff; color:#d8ebff; background:#14263a; }
     .warn { color:#ffb4b4; font-size:12px; }
+    .legend { margin-top:6px; font-size:11px; color:var(--muted); }
   </style>
 </head>
 <body>
@@ -102,6 +103,8 @@
       <h2>表示設定</h2>
       <div class="control"><label class="checkline"><input type="checkbox" id="showPoints" /> サンプル点</label></div>
       <div class="control"><label class="checkline"><input type="checkbox" id="showCurvature" checked /> 曲率ガイド</label></div>
+      <div class="control"><label class="checkline"><input type="checkbox" id="showSampleCurvature" checked /> サンプル点曲率</label></div>
+      <div class="legend">青=低曲率 / 赤=高曲率（各候補パス内の相対表示）</div>
       <div class="small">操作: ホイール=ズーム / 左ドラッグ=パン</div>
     </div>
 
@@ -254,6 +257,7 @@ function gatherInput(){
     ccTransition: (ccTransition || 0) / 100,
     showPoints: $('showPoints').checked,
     showCurvature: $('showCurvature').checked,
+    showSampleCurvature: $('showSampleCurvature').checked,
   };
 
   return { valid: invalidReasons.length === 0, cfg, invalidReasons };
@@ -382,7 +386,32 @@ function drawGoalIcon(goal,cfg){
   }
 }
 
-function drawPath(candidate, idx, showPoints){
+function computePointCurvatures(points){
+  if (!points || points.length === 0) return [];
+  if (points.length === 1) return [0];
+  const curvatures = new Array(points.length).fill(0);
+  for (let i = 1; i < points.length; i++){
+    const prev = points[i - 1];
+    const cur = points[i];
+    const ds = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+    if (ds < 1e-9) {
+      curvatures[i] = curvatures[i - 1];
+      continue;
+    }
+    const dyaw = angleWrap(cur.yaw - prev.yaw);
+    curvatures[i] = dyaw / ds;
+  }
+  if (points.length > 1) curvatures[0] = curvatures[1] || 0;
+  return curvatures;
+}
+
+function curvatureColor(kAbs, kMaxAbs){
+  const t = clamp(kAbs / Math.max(1e-9, kMaxAbs), 0, 1);
+  const hue = 210 - 210 * t;
+  return `hsl(${hue}deg 90% 58%)`;
+}
+
+function drawPath(candidate, idx, showPoints, showSampleCurvature){
   const points = candidate.points;
   if(!points.length) return;
   ctx.strokeStyle = COLORS[idx % COLORS.length];
@@ -392,9 +421,22 @@ function drawPath(candidate, idx, showPoints){
   for(let i=1;i<points.length;i++){ p=ws(points[i].x, points[i].y); ctx.lineTo(p.x,p.y); }
   ctx.stroke();
 
+  const drawStep = Math.max(1, Math.floor(points.length / 180));
+
+  if (showSampleCurvature && candidate.curvatures && candidate.curvatures.length){
+    for (let i = 0; i < points.length; i += drawStep){
+      const q = ws(points[i].x, points[i].y);
+      const kAbs = Math.abs(candidate.curvatures[i] || 0);
+      ctx.fillStyle = curvatureColor(kAbs, candidate.curvatureMaxAbs || 1);
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, 2.6, 0, TAU);
+      ctx.fill();
+    }
+  }
+
   if(showPoints){
     ctx.fillStyle = '#fcd34d';
-    for(let i=0;i<points.length;i+=Math.max(1,Math.floor(points.length/180))){
+    for(let i=0;i<points.length;i+=drawStep){
       const q=ws(points[i].x, points[i].y);
       ctx.beginPath(); ctx.arc(q.x,q.y,2,0,TAU); ctx.fill();
     }
@@ -1115,11 +1157,21 @@ function recalculate(){
   const endTol = cfg.algorithm === 'cc_dubins'
     ? Math.max(2.0, cfg.radius * 0.1)
     : (cfg.algorithm === 'reeds_shepp' ? 0.2 : 1e-6);
-  const paths = generateCandidates(cfg).map(p => ({
-    ...p,
-    visible: true,
-    integrity: evaluatePathIntegrity(p, cfg.start, cfg.goal, endTol),
-  }));
+  const paths = generateCandidates(cfg).map(p => {
+    const curvatures = computePointCurvatures(p.points || []);
+    const curvatureMin = curvatures.length ? Math.min(...curvatures) : 0;
+    const curvatureMax = curvatures.length ? Math.max(...curvatures) : 0;
+    const curvatureMaxAbs = Math.max(Math.abs(curvatureMin), Math.abs(curvatureMax), 1e-9);
+    return {
+      ...p,
+      visible: true,
+      integrity: evaluatePathIntegrity(p, cfg.start, cfg.goal, endTol),
+      curvatures,
+      curvatureMin,
+      curvatureMax,
+      curvatureMaxAbs,
+    };
+  });
   const shortestIdx = computeShortestIndex(paths);
   paths.forEach((p, idx) => p.isShortest = idx === shortestIdx);
 
@@ -1177,6 +1229,7 @@ function renderStats(){
     `表示中候補: ${visibleCount}`,
     `最短候補: ${shortest?.label ?? '-'}`,
     `最短距離: ${Number.isFinite(shortest?.totalLength) ? formatNumber(shortest.totalLength) + ' mm' : 'N/A'}`,
+    `最短候補の曲率範囲: ${shortest ? `${formatNumber(shortest.curvatureMin)} ~ ${formatNumber(shortest.curvatureMax)} 1/mm` : 'N/A'}`,
     `接続性(最短候補): ${integrity?.connected ? 'OK' : 'NG'}`,
     `始点誤差/終点誤差: ${integrity ? `${formatNumber(integrity.startError)} / ${formatNumber(integrity.endError)} mm` : 'N/A'}`,
     `視点スケール: ${state.camera.scale.toFixed(3)} px/mm`,
@@ -1192,7 +1245,7 @@ function render(){
 
   if (state.result) {
     state.result.paths.forEach((p, i) => {
-      if (p.visible) drawPath(p, i, cfg.showPoints);
+      if (p.visible) drawPath(p, i, cfg.showPoints, cfg.showSampleCurvature);
     });
     drawStartIcon(cfg.start, cfg);
     drawGoalIcon(cfg.goal, cfg);
@@ -1248,7 +1301,7 @@ window.addEventListener('mousemove', (e) => {
   render();
 });
 
-['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','ccTransition','showPoints','showCurvature']
+['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','ccTransition','showPoints','showCurvature','showSampleCurvature']
   .forEach(id => {
     $(id).addEventListener('input',  () => { clampInputToLimits(id); recalculate(); });
     $(id).addEventListener('change', () => { clampInputToLimits(id); recalculate(); });

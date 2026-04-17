@@ -394,8 +394,12 @@ function drawPath(candidate, idx, showPoints){
 
   if(showPoints){
     ctx.fillStyle = '#fcd34d';
-    for(let i=0;i<points.length;i+=Math.max(1,Math.floor(points.length/180))){
-      const q=ws(points[i].x, points[i].y);
+    // 描画負荷を抑えるため、1パスあたり最大200点を等間隔に可視化する
+    const maxVisiblePoints = 200;
+    const drawCount = Math.min(points.length, maxVisiblePoints);
+    for(let i=0;i<drawCount;i++){
+      const idx = drawCount === 1 ? 0 : Math.round(i * (points.length - 1) / (drawCount - 1));
+      const q=ws(points[idx].x, points[idx].y);
       ctx.beginPath(); ctx.arc(q.x,q.y,2,0,TAU); ctx.fill();
     }
   }
@@ -1256,11 +1260,12 @@ window.addEventListener('mousemove', (e) => {
 
 $('randomBtn').addEventListener('click', ()=>{
   const r=(a,b)=> String(Math.round(Math.random()*(b-a)+a));
-  $('sx').value=r(-70,-10); $('sy').value=r(-40,40);
-  $('gx').value=r(10,70); $('gy').value=r(-40,40);
+  $('sx').value=r(100,2000); $('sy').value=r(100,2000);
+  $('gx').value=r(100,2000); $('gy').value=r(100,2000);
   $('syaw').value=r(-180,180); $('gyaw').value=r(-180,180);
   $('sk').value=r(-1,1);
   $('gk').value=r(-1,1);
+  $('radius').value=r(10,200);
   $('ccTransition').value=r(0,100);
   state.camera.initialized = false;
   recalculate();

@@ -543,7 +543,52 @@ function sampleReedsSheppPath(s, g, R, step, word, gears, lengths){
   return { points, totalLength, segments:segLabel, type:`RS-${word}`, rawSeg };
 }
 
-function generateReedsSheppCandidates(cfg){
+function reverseDubinsAsBackwardRS(base, label){
+  const revModes = (base.segments || []).slice().reverse();
+  const revRaw = (base.rawSeg || []).slice().reverse().map(v => -Math.abs(v));
+  const revPts = (base.points || []).slice().reverse().map(p => ({ x:p.x, y:p.y, yaw:mod2pi(p.yaw) }));
+  return {
+    id:`RS_ANALYTIC_B_${label}`,
+    label:`RS-${label}-B`,
+    points: revPts,
+    totalLength: base.totalLength,
+    segments: revModes.map(m => `B-${m}`),
+    type:`RS-ANALYTIC-B-${label}`,
+    rawSeg: revRaw,
+  };
+}
+
+function generateReedsSheppCandidatesAnalytic(cfg){
+  const types=['LSL','RSR','LSR','RSL','RLR','LRL'];
+  const list = [];
+  const seen = new Set();
+  const pushUnique = (c) => {
+    const key = `${c.type}|${(c.rawSeg || []).map(v => v.toFixed(3)).join(',')}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(c);
+  };
+
+  for (const t of types){
+    const fwd = sampleDubinsByType(cfg.start, cfg.goal, cfg.radius, cfg.step, t);
+    if (fwd) {
+      pushUnique({
+        id:`RS_ANALYTIC_F_${t}`,
+        label:`RS-${t}-F`,
+        ...fwd,
+        type:`RS-ANALYTIC-F-${t}`,
+        segments: (fwd.segments || []).map(m => `F-${m}`),
+      });
+    }
+
+    // goal->start の Dubins を時間反転して、全後退 Reeds-Shepp 候補として扱う
+    const g2s = sampleDubinsByType(cfg.goal, cfg.start, cfg.radius, cfg.step, t);
+    if (g2s) pushUnique(reverseDubinsAsBackwardRS(g2s, t));
+  }
+  return list;
+}
+
+function generateReedsSheppCandidatesNumerical(cfg){
   const local = transformToLocal(cfg.start, cfg.goal, cfg.radius);
   const d = Math.hypot(local.x, local.y);
   const words = [];
@@ -579,7 +624,7 @@ function generateReedsSheppCandidates(cfg){
         const sol = solveReedsSheppByNewton(local, w, gp, seed);
         if (!sol) continue;
         const end = rsSimulateNormalized(w, gp, sol, 0).end;
-        if (Math.hypot(end.x-local.x, end.y-local.y) > 2e-2 || Math.abs(angleWrap(end.yaw-local.th)) > 2e-2) continue;
+        if (Math.hypot(end.x-local.x, end.y-local.y) > 5e-2 || Math.abs(angleWrap(end.yaw-local.th)) > 5e-2) continue;
         const path = sampleReedsSheppPath(cfg.start, cfg.goal, cfg.radius, cfg.step, w, gp, sol);
         const key = path.rawSeg.map(v => v.toFixed(3)).join(',');
         if (seen.has(key)) continue;
@@ -993,8 +1038,10 @@ function generateCandidates(cfg){
     return list;
   }
   if (cfg.algorithm === 'reeds_shepp') {
-    const rs = generateReedsSheppCandidates(cfg);
-    if (rs.length) return rs;
+    const rsAnalytic = generateReedsSheppCandidatesAnalytic(cfg);
+    if (rsAnalytic.length) return rsAnalytic;
+    const rsNumerical = generateReedsSheppCandidatesNumerical(cfg);
+    if (rsNumerical.length) return rsNumerical;
     list.push({ id:'RS_1', label:'RS-1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
     return list;
   }

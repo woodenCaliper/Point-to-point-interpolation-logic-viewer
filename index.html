@@ -630,48 +630,106 @@ function sampleSingleClothoidG1(s, g, step){
   const gxLocal = c * dx + si * dy;
   const gyLocal = -si * dx + c * dy;
   const dYaw = angleWrap(g.yaw - s.yaw);
-
-  let L = Math.max(1, Math.hypot(gxLocal, gyLocal));
-  let k0 = 0;
+  const baseDist = Math.max(1, Math.hypot(gxLocal, gyLocal));
+  const samplingStep = Math.max(0.5, step || 1);
 
   const evalLocal = (Lv, k0v) => {
-    const sigma = (2 * (dYaw - k0v * Lv)) / (Lv * Lv);
-    const samples = integrateClothoidNormalized(k0v, sigma, Lv, 1);
+    const safeL = Math.max(1e-3, Lv);
+    const sigma = (2 * (dYaw - k0v * safeL)) / (safeL * safeL);
+    const samples = integrateClothoidNormalized(k0v, sigma, safeL, samplingStep);
     const end = samples[samples.length - 1];
-    return { sigma, samples, end };
+    const ex = gxLocal - end.x;
+    const ey = gyLocal - end.y;
+    return { sigma, samples, end, ex, ey, err2: ex*ex + ey*ey };
   };
 
-  for (let iter=0; iter<24; iter++){
-    const base = evalLocal(L, k0);
-    const ex = gxLocal - base.end.x;
-    const ey = gyLocal - base.end.y;
-    if (Math.hypot(ex, ey) < 5e-3) break;
+  // 旧実装の課題:
+  // - 単一初期値 + 2x2 Newton だと、Δθ≈±π 近傍でヤコビアンが悪条件になりやすく、更新が止まりやすい。
+  // - k0 のクランプ幅が狭すぎると有効解に到達できない場合がある。
+  // 対策として multi-start + ダンピング付き Gauss-Newton で最小二乗誤差を下げる。
+  const seedLs = [baseDist, baseDist * 1.5, baseDist * 2.0, baseDist * 2.8];
+  const seedKs = [
+    0,
+    (2 * dYaw) / baseDist,
+    dYaw / baseDist,
+    -dYaw / baseDist,
+    0.25,
+    -0.25,
+  ];
 
-    const hL = Math.max(1e-3, L * 1e-3);
-    const hk = 1e-4;
+  let best = null;
 
-    const eL = evalLocal(L + hL, k0).end;
-    const ek = evalLocal(L, k0 + hk).end;
+  const trySolve = (L0, k00) => {
+    let L = Math.max(0.5, L0);
+    let k0 = clamp(k00, -4, 4);
+    let localBest = evalLocal(L, k0);
 
-    const J = [
-      [(eL.x - base.end.x) / hL, (ek.x - base.end.x) / hk],
-      [(eL.y - base.end.y) / hL, (ek.y - base.end.y) / hk],
-    ];
+    for (let iter=0; iter<40; iter++){
+      const cur = evalLocal(L, k0);
+      if (!localBest || cur.err2 < localBest.err2) localBest = cur;
+      if (cur.err2 < 2.5e-5) break;
 
-    const det = J[0][0] * J[1][1] - J[0][1] * J[1][0];
-    if (Math.abs(det) < 1e-10) break;
+      const hL = Math.max(1e-3, L * 8e-4);
+      const hk = 2e-4;
+      const eL = evalLocal(L + hL, k0);
+      const ek = evalLocal(L, k0 + hk);
 
-    const dL = ( ex * J[1][1] - ey * J[0][1]) / det;
-    const dk = (-ex * J[1][0] + ey * J[0][0]) / det;
+      const j11 = (eL.end.x - cur.end.x) / hL;
+      const j12 = (ek.end.x - cur.end.x) / hk;
+      const j21 = (eL.end.y - cur.end.y) / hL;
+      const j22 = (ek.end.y - cur.end.y) / hk;
 
-    const stepNorm = Math.hypot(dL, dk * Math.max(1, L));
-    const gain = stepNorm > 20 ? 20 / stepNorm : 1;
+      // 正規方程式 (J^T J + λI) Δ = J^T r
+      const r1 = cur.ex, r2 = cur.ey;
+      const a11 = j11*j11 + j21*j21;
+      const a12 = j11*j12 + j21*j22;
+      const a22 = j12*j12 + j22*j22;
+      const b1 = j11*r1 + j21*r2;
+      const b2 = j12*r1 + j22*r2;
 
-    L = Math.max(0.5, L + gain * dL);
-    k0 = clamp(k0 + gain * dk, -1, 1);
+      let accepted = false;
+      const lambdas = [1e-7, 1e-5, 1e-3, 1e-2, 1e-1, 1];
+      for (const lambda of lambdas){
+        const m11 = a11 + lambda;
+        const m22 = a22 + lambda;
+        const det = m11*m22 - a12*a12;
+        if (Math.abs(det) < 1e-12) continue;
+
+        let dL = ( b1*m22 - b2*a12) / det;
+        let dk = (-b1*a12 + b2*m11) / det;
+
+        const stepNorm = Math.hypot(dL, dk * Math.max(1, L));
+        const gain = stepNorm > 25 ? 25 / stepNorm : 1;
+        dL *= gain;
+        dk *= gain;
+
+        const candL = Math.max(0.5, Math.min(600, L + dL));
+        const candK = clamp(k0 + dk, -4, 4);
+        const cand = evalLocal(candL, candK);
+
+        if (cand.err2 < cur.err2){
+          L = candL;
+          k0 = candK;
+          if (!localBest || cand.err2 < localBest.err2) localBest = cand;
+          accepted = true;
+          break;
+        }
+      }
+
+      if (!accepted) break;
+    }
+
+    return { L, k0, result: localBest };
+  };
+
+  for (const L0 of seedLs){
+    for (const k00 of seedKs){
+      const solved = trySolve(L0, k00);
+      if (!best || solved.result.err2 < best.result.err2) best = solved;
+    }
   }
 
-  const solved = evalLocal(L, k0);
+  const solved = best?.result || evalLocal(baseDist, 0);
   const points = solved.samples.map(p => ({
     x: s.x + c * p.x - si * p.y,
     y: s.y + si * p.x + c * p.y,
@@ -686,7 +744,7 @@ function sampleSingleClothoidG1(s, g, step){
     totalLength,
     segments:['CLOTHOID'],
     type:'SC-G1',
-    rawSeg:[L],
+    rawSeg:[best?.L ?? baseDist],
   };
 }
 

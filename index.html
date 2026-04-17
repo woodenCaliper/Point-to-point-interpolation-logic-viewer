@@ -543,6 +543,136 @@ function sampleReedsSheppPath(s, g, R, step, word, gears, lengths){
   return { points, totalLength, segments:segLabel, type:`RS-${word}`, rawSeg };
 }
 
+function rsPolar(x, y){
+  return { r: Math.hypot(x, y), theta: Math.atan2(y, x) };
+}
+
+function rsReflectModes(modes){
+  return modes.map(m => m === 'L' ? 'R' : m === 'R' ? 'L' : 'S');
+}
+
+function sampleReedsSheppByModesAndLengths(s, R, modes, lengths){
+  const q = { x:0, y:0, yaw:0 };
+  const points = [{ ...q }];
+  const samplingStep = 1;
+  for (let i=0;i<modes.length;i++){
+    const mode = modes[i];
+    const L = lengths[i];
+    if (!Number.isFinite(L) || Math.abs(L) < 1e-9) continue;
+    const turnSign = mode === 'L' ? 1 : mode === 'R' ? -1 : 0;
+    const n = Math.max(1, Math.ceil(Math.abs(L * R) / samplingStep));
+    const ds = L / n;
+    for (let k=0;k<n;k++){
+      if (Math.abs(turnSign) < 1e-12){
+        q.x += ds * Math.cos(q.yaw);
+        q.y += ds * Math.sin(q.yaw);
+      } else {
+        const y2 = q.yaw + turnSign * ds;
+        q.x += (Math.sin(y2) - Math.sin(q.yaw)) / turnSign;
+        q.y += (-Math.cos(y2) + Math.cos(q.yaw)) / turnSign;
+        q.yaw = y2;
+      }
+      points.push({ ...q });
+    }
+  }
+  const c = Math.cos(s.yaw), si = Math.sin(s.yaw);
+  const global = points.map(p => ({
+    x: s.x + R * (c * p.x - si * p.y),
+    y: s.y + R * (si * p.x + c * p.y),
+    yaw: mod2pi(s.yaw + p.yaw),
+  }));
+  const rawSeg = lengths.map(v => v * R);
+  const totalLength = lengths.reduce((a, v) => a + Math.abs(v) * R, 0);
+  const segments = modes.map((m, i) => `${lengths[i] >= 0 ? 'F' : 'B'}-${m}`);
+  return { points:global, totalLength, segments, rawSeg };
+}
+
+function rsFamilyCSC_LSL(x, y, phi){
+  const p = rsPolar(x - Math.sin(phi), y + Math.cos(phi) - 1);
+  const t = mod2pi(p.theta);
+  const u = p.r;
+  const v = mod2pi(phi - t);
+  if (t < -1e-9 || u < -1e-9 || v < -1e-9) return null;
+  return { modes:['L','S','L'], lengths:[t,u,v], name:'LSL' };
+}
+
+function rsFamilyCSC_LSR(x, y, phi){
+  const p = rsPolar(x + Math.sin(phi), y - Math.cos(phi) - 1);
+  if (p.r < 2) return null;
+  const u = Math.sqrt(Math.max(0, p.r * p.r - 4));
+  const a = Math.atan2(2, u);
+  const t = mod2pi(p.theta + a);
+  const v = mod2pi(t - phi);
+  if (t < -1e-9 || u < -1e-9 || v < -1e-9) return null;
+  return { modes:['L','S','R'], lengths:[t,u,v], name:'LSR' };
+}
+
+function rsFamilyCCC_LRL(x, y, phi){
+  const p = rsPolar(x - Math.sin(phi), y + Math.cos(phi) - 1);
+  if (p.r > 4) return null;
+  const A = Math.acos(clamp(p.r / 4, -1, 1));
+  const t = mod2pi(Math.PI / 2 + p.theta + A);
+  const u = mod2pi(Math.PI - 2 * A);
+  const v = mod2pi(phi - t - u);
+  return { modes:['L','R','L'], lengths:[t,u,v], name:'LRL' };
+}
+
+function rsFamilyCCCC_LRLR(x, y, phi){
+  const p = rsPolar(x + Math.sin(phi), y - Math.cos(phi) - 1);
+  const c = (p.r + 2) / 4;
+  if (c < -1 || c > 1) return null;
+  const u = Math.acos(c);
+  const t = mod2pi(Math.PI / 2 + p.theta + u);
+  const v = mod2pi(phi - t + 2 * u);
+  return { modes:['L','R','L','R'], lengths:[t,-u,-u,v], name:'LRLR' };
+}
+
+function rsSymmetryExpand(baseFamily, x, y, phi){
+  const out = [];
+  const add = (f, rx, ry, rphi, timeFlip=false, reflect=false) => {
+    const r = f(rx, ry, rphi);
+    if (!r) return;
+    let modes = r.modes.slice();
+    let lengths = r.lengths.slice();
+    if (timeFlip) lengths = lengths.map(v => -v).reverse(), modes = modes.slice().reverse();
+    if (reflect) modes = rsReflectModes(modes);
+    out.push({ modes, lengths });
+  };
+  add(baseFamily, x, y, phi, false, false);
+  add(baseFamily, x, -y, -phi, false, true);
+  add(baseFamily, -x, y, -phi, true, false);
+  add(baseFamily, -x, -y, phi, true, true);
+  return out;
+}
+
+function generateReedsSheppCandidatesReference(cfg){
+  const local = transformToLocal(cfg.start, cfg.goal, cfg.radius);
+  const families = [rsFamilyCSC_LSL, rsFamilyCSC_LSR, rsFamilyCCC_LRL, rsFamilyCCCC_LRLR];
+  const list = [];
+  const seen = new Set();
+  for (const fam of families){
+    const expanded = rsSymmetryExpand(fam, local.x, local.y, local.th);
+    for (const cand of expanded){
+      const path = sampleReedsSheppByModesAndLengths(cfg.start, cfg.radius, cand.modes, cand.lengths);
+      const end = path.points[path.points.length - 1];
+      if (!end) continue;
+      const posErr = Math.hypot(end.x - cfg.goal.x, end.y - cfg.goal.y);
+      const yawErr = Math.abs(angleWrap(end.yaw - cfg.goal.yaw));
+      if (posErr > 1.0 || yawErr > deg2rad(2.0)) continue;
+      const key = path.rawSeg.map(v => v.toFixed(3)).join(',');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push({
+        id:`RS_REF_${list.length+1}`,
+        label:`RS-REF-${list.length+1}`,
+        ...path,
+        type:'RS-REFERENCE',
+      });
+    }
+  }
+  return list.sort((a,b) => a.totalLength - b.totalLength);
+}
+
 function reverseDubinsAsBackwardRS(base, label){
   const revModes = (base.segments || []).slice().reverse();
   const revRaw = (base.rawSeg || []).slice().reverse().map(v => -Math.abs(v));
@@ -1126,10 +1256,11 @@ function generateCandidates(cfg){
     return list;
   }
   if (cfg.algorithm === 'reeds_shepp') {
+    const rsReference = generateReedsSheppCandidatesReference(cfg);
     const rsAnalytic = generateReedsSheppCandidatesAnalytic(cfg);
     const rsSwitchback = generateSwitchbackCandidatesByCuspSearch(cfg);
     const rsNumerical = generateReedsSheppCandidatesNumerical(cfg);
-    const rs = mergeReedsSheppCandidates([...rsAnalytic, ...rsSwitchback], rsNumerical);
+    const rs = mergeReedsSheppCandidates([...rsReference, ...rsAnalytic, ...rsSwitchback], rsNumerical);
     if (rs.length) return rs;
     list.push({ id:'RS_1', label:'RS-1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
     return list;

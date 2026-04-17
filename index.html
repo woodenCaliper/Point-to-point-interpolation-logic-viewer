@@ -676,7 +676,86 @@ function generateReedsSheppCandidatesReference(cfg){
       });
     }
   }
+  const hasSwitchback = list.some(p => {
+    const signs = (p.rawSeg || []).map(v => Math.sign(v)).filter(Boolean);
+    return signs.some((s, i) => i > 0 && s !== signs[i - 1]);
+  });
+  if (!hasSwitchback) {
+    const extra = generateReferenceSwitchbackCandidates(cfg);
+    list.push(...extra);
+  }
   return list.sort((a,b) => a.totalLength - b.totalLength);
+}
+
+function bestDubinsBetween(s, g, R, step){
+  const types=['LSL','RSR','LSR','RSL','RLR','LRL'];
+  let best = null;
+  for (const t of types){
+    const p = sampleDubinsByType(s, g, R, step, t);
+    if (!p) continue;
+    if (!best || p.totalLength < best.totalLength) best = { type:t, ...p };
+  }
+  return best;
+}
+
+function buildReferenceSwitchbackCandidate(cfg, cusp, index){
+  const p1 = bestDubinsBetween(cfg.start, cusp, cfg.radius, cfg.step);
+  const p2 = bestDubinsBetween(cfg.goal, cusp, cfg.radius, cfg.step);
+  if (!p1 || !p2) return null;
+
+  const backPts = (p2.points || []).slice().reverse();
+  const points = [...(p1.points || []), ...backPts.slice(1)];
+  const rawSeg = [
+    ...(p1.rawSeg || []).map(v => Math.abs(v)),
+    ...(p2.rawSeg || []).slice().reverse().map(v => -Math.abs(v)),
+  ];
+  const segments = [
+    ...(p1.segments || []).map(m => `F-${m}`),
+    ...(p2.segments || []).slice().reverse().map(m => `B-${m}`),
+  ];
+  return {
+    id:`RS_REF_SW_${index}`,
+    label:`${rsBuildLabel([...p1.segments, ...p2.segments.slice().reverse()], rawSeg, 'RS-REF-SW')}#${index}`,
+    points,
+    totalLength: p1.totalLength + p2.totalLength,
+    segments,
+    type:'RS-REFERENCE-SWITCHBACK',
+    rawSeg,
+  };
+}
+
+function generateReferenceSwitchbackCandidates(cfg){
+  const sx = cfg.start.x, sy = cfg.start.y;
+  const gx = cfg.goal.x, gy = cfg.goal.y;
+  const mx = (sx + gx) * 0.5, my = (sy + gy) * 0.5;
+  const dx = gx - sx, dy = gy - sy;
+  const dist = Math.hypot(dx, dy);
+  const ux = dist > 1e-9 ? dx / dist : 1;
+  const uy = dist > 1e-9 ? dy / dist : 0;
+  const vx = -uy, vy = ux;
+  const scales = [0, 1.5, -1.5, 3.0, -3.0];
+  const along = [-0.3, 0, 0.3];
+  const yawSeeds = [
+    angleWrap(cfg.start.yaw),
+    angleWrap(cfg.goal.yaw),
+    angleWrap(Math.atan2(dy, dx)),
+    angleWrap(Math.atan2(dy, dx) + Math.PI),
+  ];
+
+  const list = [];
+  let idx = 1;
+  for (const a of along){
+    for (const s of scales){
+      const cx = mx + ux * (a * dist) + vx * (s * cfg.radius);
+      const cy = my + uy * (a * dist) + vy * (s * cfg.radius);
+      for (const yaw of yawSeeds){
+        const c = buildReferenceSwitchbackCandidate(cfg, { x:cx, y:cy, yaw }, idx++);
+        if (c) list.push(c);
+      }
+    }
+  }
+  list.sort((a,b) => a.totalLength - b.totalLength);
+  return list.slice(0, 8);
 }
 
 function integrateClothoidNormalized(k0, sigma, length, samplingStep = 1){

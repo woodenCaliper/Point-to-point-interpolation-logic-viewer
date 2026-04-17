@@ -69,7 +69,7 @@
         <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="sy" type="number" step="1" value="-20" /></div>
       </div>
       <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="syaw" type="number" step="1" value="20" /></div>
-      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="number" step="1" value="0" /></div>
+      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="number" step="0.05" value="0" /></div>
     </div>
 
     <div class="group">
@@ -79,7 +79,7 @@
         <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="gy" type="number" step="1" value="30" /></div>
       </div>
       <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="gyaw" type="number" step="1" value="-35" /></div>
-      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="number" step="1" value="0" /></div>
+      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="number" step="0.05" value="0" /></div>
     </div>
 
     <div class="group">
@@ -207,11 +207,17 @@ function clampInputToLimits(id) {
   if (clamped !== val) el.value = String(clamped);
 }
 
-function parseField(id, validator){
+function parseField(id, validator, options = {}){
+  const { integerOnly = true, step = null } = options;
   const el = $(id);
   const raw = el.value.trim();
   const val = Number(raw);
-  const ok = raw.length > 0 && Number.isFinite(val) && Number.isInteger(val) && (!validator || validator(val));
+  const stepOk = step == null || Math.abs(val / step - Math.round(val / step)) < 1e-9;
+  const ok = raw.length > 0
+    && Number.isFinite(val)
+    && (!integerOnly || Number.isInteger(val))
+    && stepOk
+    && (!validator || validator(val));
   el.classList.toggle('invalid', !ok);
   return ok ? val : null;
 }
@@ -232,7 +238,8 @@ function gatherInput(){
     radius = parseField('radius', v => v > 0);
   }
   if (algorithm === 'cc_dubins') {
-    sk = parseField('sk'); gk = parseField('gk');
+    sk = parseField('sk', null, { integerOnly: false, step: 0.05 });
+    gk = parseField('gk', null, { integerOnly: false, step: 0.05 });
     ccTransition = parseField('ccTransition', v => v >= 0 && v <= 100);
   }
 

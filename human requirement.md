@@ -74,6 +74,7 @@
 ### CC-Dubins
 - CC-Dubins は「比較用の近似」ではなく、**実装方式まで厳密に定義したもの**を採用する。
 - CC-Dubins 実装の参照ソースは、**Holger Banzhaf らの `steering_functions`** とする。
+- CC-Dubins の遷移制約入力は、遷移率[%]ではなく `sigma_max`（単位: `1/mm²`）を用いる。
 
 ### GitHub Pages 公開ルール
 - GitHub Pages への公開方法は、できるだけ **GitHub公式かつ一般的な方法**に則る。

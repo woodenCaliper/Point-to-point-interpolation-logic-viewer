@@ -84,7 +84,7 @@
     <div class="group">
       <h2>Path</h2>
       <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" min="1" /></div>
-      <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="25" min="0" max="100" /></div>
+      <div class="control only-curv"><label>σmax <span class="unit">[1/mm²]</span></label><input id="sigmaMax" type="number" step="1" value="1" min="1" /></div>
     </div>
 
     <div class="row"><button id="randomBtn">ランダム</button></div>
@@ -187,7 +187,7 @@ function updateInputVisibility(){
 
 const INPUT_LIMITS = {
   radius:       { min: 1 },
-  ccTransition: { min: 0, max: 100 },
+  sigmaMax:     { min: 1 },
 };
 
 function clampInputToLimits(id) {
@@ -220,7 +220,7 @@ function gatherInput(){
   const sx = parseField('sx'); const sy = parseField('sy');
   const gx = parseField('gx'); const gy = parseField('gy');
 
-  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, ccTransition = 0.25;
+  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, sigmaMax = 1;
 
   if (algorithm !== 'linear') {
     syaw = parseField('syaw'); gyaw = parseField('gyaw');
@@ -228,12 +228,12 @@ function gatherInput(){
   }
   if (algorithm === 'cc_dubins') {
     sk = parseField('sk'); gk = parseField('gk');
-    ccTransition = parseField('ccTransition', v => v >= 0 && v <= 100);
+    sigmaMax = parseField('sigmaMax', v => v > 0);
   }
 
   const required = { sx, sy, gx, gy };
   if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw, radius });
-  if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
+  if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, sigmaMax });
 
   for (const [k,v] of Object.entries(required)) {
     if (!isFiniteNum(v)) invalidReasons.push(`入力エラー: ${k}`);
@@ -245,7 +245,7 @@ function gatherInput(){
     goal: { x: gx, y: gy, yaw: deg2rad(gyaw || 0), k: gk || 0 },
     radius,
     step: 1,
-    ccTransition: (ccTransition || 0) / 100,
+    sigmaMax,
     showPoints: $('showPoints').checked,
     showCurvature: $('showCurvature').checked,
   };
@@ -581,10 +581,9 @@ function generateReedsSheppCandidates(cfg){
   return list;
 }
 
-function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
+function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
   const samplingStep = 1;
   const target = 1/R;
-  const transition = Math.max(samplingStep*3, R*trRate);
 
   // 境界曲率を最大曲率にクランプ（|k| <= target = 1/R）
   const ks = clamp(s.k||0, -target, target);
@@ -660,7 +659,11 @@ function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
     //   mid >= 0 となる最大の tr を使う（coeff が大きい場合に tr を制限）
     const coeff = 1 + (kStart + kEnd) / (2 * sign * target);
     const trMax = coeff > 1e-6 ? L / coeff : L;
-    const tr = Math.min(transition, trMax);
+    const trReqIn = Math.abs(sign*target - kStart) / sigmaMax;
+    const trReqOut = Math.abs(kEnd - sign*target) / sigmaMax;
+    const trReq = Math.max(trReqIn, trReqOut);
+    if (trReq > trMax + 1e-9) return null;
+    const tr = trReq;
     const midLen = Math.max(0, L - coeff * tr);
 
     // INフェーズ: kStart → sign*target へ線形補間（長さ tr）
@@ -696,14 +699,16 @@ function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
 
 // CC-Dubinsパスの終点が目標点に一致するよう、Newton法でセグメント弧長を修正する。
 // クロソイド幾何はDubins円弧と位置軌跡が異なるため、基底Dubins弧長をそのまま使うと
-// 高遷移率で終点がずれる。本関数はその補正を行う。
-function refineCCDubins(s, g, R, trRate, base){
+// sigma_max 制約下で終点がずれる場合の補正を行う。
+function refineCCDubins(s, g, R, sigmaMax, base){
   let L = base.rawSeg.slice(); // 現在のセグメント弧長 [L0, L1, L2] (mm)
 
   // 指定弧長でCCパスを積分し、終点の [x, y, yaw] を返す
   const evalEnd = (Lv) => {
     const fb = { segments: base.segments, rawSeg: Lv };
-    const pts = sampleCCDubinsFromBase(s, g, R, 1, trRate, fb).points;
+    const sampled = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb);
+    if (!sampled || !sampled.points.length) return null;
+    const pts = sampled.points;
     const p = pts[pts.length - 1];
     return [p.x, p.y, p.yaw];
   };
@@ -741,7 +746,7 @@ function refineCCDubins(s, g, R, trRate, base){
   }
 
   const fb = { segments: base.segments, rawSeg: L };
-  return sampleCCDubinsFromBase(s, g, R, 1, trRate, fb);
+  return sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb);
 }
 
 function generateCandidates(cfg){
@@ -765,7 +770,8 @@ function generateCandidates(cfg){
     if (cfg.algorithm === 'dubins') {
       list.push({ id:t, label:t, ...base });
     } else {
-      const cc = refineCCDubins(cfg.start, cfg.goal, cfg.radius, cfg.ccTransition, base);
+      const cc = refineCCDubins(cfg.start, cfg.goal, cfg.radius, cfg.sigmaMax, base);
+      if (!cc) continue;
       list.push({ id:`CC_${t}`, label:`CC-${t}`, ...cc });
     }
   }
@@ -1011,7 +1017,7 @@ window.addEventListener('mousemove', (e) => {
   render();
 });
 
-['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','ccTransition','showPoints','showCurvature']
+['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','sigmaMax','showPoints','showCurvature']
   .forEach(id => {
     $(id).addEventListener('input',  () => { clampInputToLimits(id); recalculate(); });
     $(id).addEventListener('change', () => { clampInputToLimits(id); recalculate(); });
@@ -1024,7 +1030,7 @@ $('randomBtn').addEventListener('click', ()=>{
   $('syaw').value=r(-180,180); $('gyaw').value=r(-180,180);
   $('sk').value=r(-1,1);
   $('gk').value=r(-1,1);
-  $('ccTransition').value=r(0,100);
+  $('sigmaMax').value=r(1,5);
   state.camera.initialized = false;
   recalculate();
 });

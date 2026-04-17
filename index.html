@@ -104,7 +104,7 @@
       <div class="control"><label class="checkline"><input type="checkbox" id="showPoints" /> サンプル点</label></div>
       <div class="control"><label class="checkline"><input type="checkbox" id="showCurvature" checked /> 曲率ガイド</label></div>
       <div class="control"><label class="checkline"><input type="checkbox" id="showSampleCurvature" checked /> 曲率法線（中心方向）</label></div>
-      <div class="legend">各サンプル点から曲率中心へ向かう法線を表示</div>
+      <div class="legend">各サンプル点（1mm間隔）から曲率中心へ向かう法線を表示</div>
       <div class="small">操作: ホイール=ズーム / 左ドラッグ=パン</div>
     </div>
 
@@ -410,7 +410,7 @@ function drawCurvatureNormals(candidate){
   const curvatures = candidate.curvatures || [];
   if (!points.length || !curvatures.length) return;
 
-  const drawStep = Math.max(1, Math.floor(points.length / 90));
+  const drawStep = 1; // 1mmサンプリング点を間引かず表示
   const minCurvature = 1e-4;
   const maxRadius = 120; // 可視化のための上限[mm]
 
@@ -1259,6 +1259,7 @@ function renderStats(){
     `最短候補: ${shortest?.label ?? '-'}`,
     `最短距離: ${Number.isFinite(shortest?.totalLength) ? formatNumber(shortest.totalLength) + ' mm' : 'N/A'}`,
     `最短候補の曲率範囲: ${shortest ? `${formatNumber(shortest.curvatureMin)} ~ ${formatNumber(shortest.curvatureMax)} 1/mm` : 'N/A'}`,
+    `サンプリング間隔: 1 mm (固定)`,
     `接続性(最短候補): ${integrity?.connected ? 'OK' : 'NG'}`,
     `始点誤差/終点誤差: ${integrity ? `${formatNumber(integrity.startError)} / ${formatNumber(integrity.endError)} mm` : 'N/A'}`,
     `視点スケール: ${state.camera.scale.toFixed(3)} px/mm`,

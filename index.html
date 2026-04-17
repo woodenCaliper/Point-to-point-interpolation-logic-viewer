@@ -547,10 +547,11 @@ function rsPolar(x, y){
   return { r: Math.hypot(x, y), theta: Math.atan2(y, x) };
 }
 
-function rsBuildLabel(modes, lengths, prefix = 'RS'){
+function rsBuildLabel(modes, lengths, prefix = ''){
   const modeCode = (modes || []).join('');
   const dirCode = (lengths || []).map(v => v >= 0 ? 'F' : 'B').join('');
-  return `${prefix}-${modeCode}${dirCode ? `-${dirCode}` : ''}`;
+  const base = `${modeCode}${dirCode ? `-${dirCode}` : ''}`;
+  return prefix ? `${prefix}-${base}` : base;
 }
 
 function sampleReedsSheppByModesAndLengths(s, R, modes, lengths){
@@ -733,7 +734,7 @@ function generateReedsSheppCandidatesReference(cfg){
     seen.add(key);
     list.push({
       id:`RS_REF_${list.length+1}`,
-      label: rsBuildLabel(p.ctypes, p.lengths, 'RS-REF'),
+      label: rsBuildLabel(p.ctypes, p.lengths),
       ...path,
       type:'RS-REFERENCE',
     });

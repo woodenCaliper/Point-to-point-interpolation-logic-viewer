@@ -354,6 +354,44 @@ function drawHeadingArrow(originScreen, yaw, color){
   ctx.fill();
 }
 
+function drawCurvatureCircle(centerWorld, radiusMm, color, dash){
+  if (!Number.isFinite(radiusMm) || radiusMm <= 0) return;
+  const centerScreen = ws(centerWorld.x, centerWorld.y);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.3;
+  if (dash && dash.length) ctx.setLineDash(dash);
+  ctx.beginPath();
+  ctx.arc(centerScreen.x, centerScreen.y, radiusMm * state.camera.scale, 0, TAU);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSignedCurvatureGuide(pose, k, color){
+  if (!Number.isFinite(k) || Math.abs(k) <= 1e-8) return;
+  const R = Math.min(150, Math.abs(1 / k));
+  const sign = Math.sign(k);
+  const nx = -Math.sin(pose.yaw) * sign;
+  const ny = Math.cos(pose.yaw) * sign;
+  drawCurvatureCircle({ x: pose.x + nx * R, y: pose.y + ny * R }, R, color, [5, 4]);
+}
+
+function drawBidirectionalRadiusGuides(pose, radius, color){
+  if (!Number.isFinite(radius) || radius <= 0) return;
+  const R = Math.min(150, radius);
+  const nx = -Math.sin(pose.yaw);
+  const ny = Math.cos(pose.yaw);
+  drawCurvatureCircle({ x: pose.x + nx * R, y: pose.y + ny * R }, R, color, [5, 4]);
+  drawCurvatureCircle({ x: pose.x - nx * R, y: pose.y - ny * R }, R, color, [2, 5]);
+}
+
+function effectiveBoundaryCurvature(k, radius){
+  if (!Number.isFinite(k)) return 0;
+  if (!Number.isFinite(radius) || radius <= 0) return k;
+  const target = 1 / radius;
+  return clamp(k, -target, target);
+}
+
 function drawStartIcon(start,cfg){
   const p = ws(start.x,start.y);
   ctx.fillStyle='#22c55e'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
@@ -362,15 +400,14 @@ function drawStartIcon(start,cfg){
     drawHeadingArrow(p, start.yaw, '#22c55e');
   }
 
-  if (cfg.algorithm === 'cc_dubins' && cfg.showCurvature && Math.abs(start.k) > 1e-8){
-    const R = Math.min(150, Math.abs(1 / start.k));
-    const sign = Math.sign(start.k);
-    const nx = -Math.sin(start.yaw) * sign;
-    const ny = Math.cos(start.yaw) * sign;
-    const c = ws(start.x + nx*R, start.y + ny*R);
-    ctx.strokeStyle='#86efac'; ctx.lineWidth=1.3; ctx.setLineDash([5,4]);
-    ctx.beginPath(); ctx.arc(c.x,c.y,R*state.camera.scale,0,TAU); ctx.stroke();
-    ctx.setLineDash([]);
+  if (cfg.showCurvature && cfg.algorithm !== 'linear'){
+    if (cfg.algorithm === 'cc_dubins') {
+      const ks = effectiveBoundaryCurvature(start.k, cfg.radius);
+      if (Math.abs(ks) > 1e-8) drawSignedCurvatureGuide(start, ks, '#86efac');
+      else drawBidirectionalRadiusGuides(start, cfg.radius, '#86efac');
+    } else if (cfg.algorithm === 'dubins' || cfg.algorithm === 'reeds_shepp') {
+      drawBidirectionalRadiusGuides(start, cfg.radius, '#86efac');
+    }
   }
 }
 
@@ -379,6 +416,16 @@ function drawGoalIcon(goal,cfg){
   ctx.fillStyle='#fb923c'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
   if (cfg.algorithm !== 'linear'){
     drawHeadingArrow(p, goal.yaw, '#fb923c');
+  }
+
+  if (cfg.showCurvature && cfg.algorithm !== 'linear'){
+    if (cfg.algorithm === 'cc_dubins') {
+      const kg = effectiveBoundaryCurvature(goal.k, cfg.radius);
+      if (Math.abs(kg) > 1e-8) drawSignedCurvatureGuide(goal, kg, '#fdba74');
+      else drawBidirectionalRadiusGuides(goal, cfg.radius, '#fdba74');
+    } else if (cfg.algorithm === 'dubins' || cfg.algorithm === 'reeds_shepp') {
+      drawBidirectionalRadiusGuides(goal, cfg.radius, '#fdba74');
+    }
   }
 }
 

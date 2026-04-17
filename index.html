@@ -103,8 +103,8 @@
       <h2>表示設定</h2>
       <div class="control"><label class="checkline"><input type="checkbox" id="showPoints" /> サンプル点</label></div>
       <div class="control"><label class="checkline"><input type="checkbox" id="showCurvature" checked /> 曲率ガイド</label></div>
-      <div class="control"><label class="checkline"><input type="checkbox" id="showSampleCurvature" checked /> サンプル点曲率</label></div>
-      <div class="legend">青=低曲率 / 赤=高曲率（各候補パス内の相対表示）</div>
+      <div class="control"><label class="checkline"><input type="checkbox" id="showSampleCurvature" checked /> 曲率法線（中心方向）</label></div>
+      <div class="legend">各サンプル点から曲率中心へ向かう法線を表示</div>
       <div class="small">操作: ホイール=ズーム / 左ドラッグ=パン</div>
     </div>
 
@@ -405,10 +405,48 @@ function computePointCurvatures(points){
   return curvatures;
 }
 
-function curvatureColor(kAbs, kMaxAbs){
-  const t = clamp(kAbs / Math.max(1e-9, kMaxAbs), 0, 1);
-  const hue = 210 - 210 * t;
-  return `hsl(${hue}deg 90% 58%)`;
+function drawCurvatureNormals(candidate){
+  const points = candidate.points || [];
+  const curvatures = candidate.curvatures || [];
+  if (!points.length || !curvatures.length) return;
+
+  const drawStep = Math.max(1, Math.floor(points.length / 90));
+  const minCurvature = 1e-4;
+  const maxRadius = 120; // 可視化のための上限[mm]
+
+  ctx.save();
+  ctx.lineWidth = 1.1;
+
+  for (let i = 0; i < points.length; i += drawStep){
+    const k = curvatures[i] || 0;
+    if (Math.abs(k) < minCurvature) continue;
+
+    const p = points[i];
+    const radius = Math.min(maxRadius, Math.abs(1 / k));
+    const signedRadius = radius * Math.sign(k);
+    const nx = -Math.sin(p.yaw);
+    const ny = Math.cos(p.yaw);
+    const center = {
+      x: p.x + nx * signedRadius,
+      y: p.y + ny * signedRadius,
+    };
+
+    const ps = ws(p.x, p.y);
+    const cs = ws(center.x, center.y);
+
+    ctx.strokeStyle = k > 0 ? 'rgba(125, 211, 252, 0.75)' : 'rgba(251, 146, 60, 0.75)';
+    ctx.beginPath();
+    ctx.moveTo(ps.x, ps.y);
+    ctx.lineTo(cs.x, cs.y);
+    ctx.stroke();
+
+    ctx.fillStyle = k > 0 ? '#38bdf8' : '#fb923c';
+    ctx.beginPath();
+    ctx.arc(cs.x, cs.y, 1.8, 0, TAU);
+    ctx.fill();
+  }
+
+  ctx.restore();
 }
 
 function drawPath(candidate, idx, showPoints, showSampleCurvature){
@@ -423,16 +461,7 @@ function drawPath(candidate, idx, showPoints, showSampleCurvature){
 
   const drawStep = Math.max(1, Math.floor(points.length / 180));
 
-  if (showSampleCurvature && candidate.curvatures && candidate.curvatures.length){
-    for (let i = 0; i < points.length; i += drawStep){
-      const q = ws(points[i].x, points[i].y);
-      const kAbs = Math.abs(candidate.curvatures[i] || 0);
-      ctx.fillStyle = curvatureColor(kAbs, candidate.curvatureMaxAbs || 1);
-      ctx.beginPath();
-      ctx.arc(q.x, q.y, 2.6, 0, TAU);
-      ctx.fill();
-    }
-  }
+  if (showSampleCurvature) drawCurvatureNormals(candidate);
 
   if(showPoints){
     ctx.fillStyle = '#fcd34d';

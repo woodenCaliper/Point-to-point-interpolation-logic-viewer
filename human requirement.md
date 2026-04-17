@@ -7,6 +7,7 @@
 1. 直線補間（Linear Interpolation）
 2. Dubins Path
 3. CC-Dubins Path
+4. 単一クロソイドG1補間パス (Single Clothoid G1)
 
 > 今後、経路生成ロジックは追加される可能性がある。
 

@@ -58,6 +58,7 @@
         <option value="dubins">Dubins Path</option>
         <option value="reeds_shepp">Reeds-Shepp Path</option>
         <option value="cc_dubins">CC-Dubins Path</option>
+        <option value="single_clothoid_g1">単一クロソイド G1</option>
       </select>
     </div>
 
@@ -180,8 +181,10 @@ function normalizeAngleInput(id){
 
 function updateInputVisibility(){
   const algo = $('algorithm').value;
-  document.querySelectorAll('.only-theta').forEach(e => e.style.display = (algo === 'linear') ? 'none' : 'grid');
-  document.querySelectorAll('.only-turn').forEach(e => e.style.display = (algo === 'linear') ? 'none' : 'grid');
+  const needsTheta = algo !== 'linear';
+  const needsRadius = (algo === 'dubins' || algo === 'reeds_shepp' || algo === 'cc_dubins');
+  document.querySelectorAll('.only-theta').forEach(e => e.style.display = needsTheta ? 'grid' : 'none');
+  document.querySelectorAll('.only-turn').forEach(e => e.style.display = needsRadius ? 'grid' : 'none');
   document.querySelectorAll('.only-curv').forEach(e => e.style.display = (algo === 'cc_dubins') ? 'grid' : 'none');
 }
 
@@ -224,6 +227,8 @@ function gatherInput(){
 
   if (algorithm !== 'linear') {
     syaw = parseField('syaw'); gyaw = parseField('gyaw');
+  }
+  if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') {
     radius = parseField('radius', v => v > 0);
   }
   if (algorithm === 'cc_dubins') {
@@ -232,7 +237,8 @@ function gatherInput(){
   }
 
   const required = { sx, sy, gx, gy };
-  if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw, radius });
+  if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw });
+  if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') Object.assign(required, { radius });
   if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
 
   for (const [k,v] of Object.entries(required)) {
@@ -581,6 +587,232 @@ function generateReedsSheppCandidates(cfg){
   return list;
 }
 
+
+function integrateClothoidNormalized(k0, sigma, length, samplingStep = 1){
+  const pts = [{ x:0, y:0, yaw:0, s:0, k:k0 }];
+  const st = { x:0, y:0, yaw:0, k:k0 };
+  const n = Math.max(2, Math.ceil(length / Math.max(1e-6, samplingStep)));
+  const ds = length / n;
+
+  for (let i=0;i<n;i++){
+    const c = Math.cos(st.yaw);
+    const si = Math.sin(st.yaw);
+    const k = st.k;
+    const ds2 = ds * ds;
+    const ds3 = ds2 * ds;
+    const ds4 = ds3 * ds;
+    const ds5 = ds4 * ds;
+
+    st.x += c*ds
+      - 0.5*k*si*ds2
+      + ((-sigma*si - k*k*c)/6)*ds3
+      + ((k*k*k*si - 3*k*sigma*c)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*c + 6*k*k*sigma*si)/120)*ds5;
+
+    st.y += si*ds
+      + 0.5*k*c*ds2
+      + ((sigma*c - k*k*si)/6)*ds3
+      + ((-k*k*k*c - 3*k*sigma*si)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*si - 6*k*k*sigma*c)/120)*ds5;
+
+    st.yaw = angleWrap(st.yaw + k*ds + 0.5*sigma*ds2);
+    st.k += sigma * ds;
+    pts.push({ x:st.x, y:st.y, yaw:st.yaw, s:(i+1)*ds, k:st.k });
+  }
+
+  return pts;
+}
+
+
+function simpsonIntegral01(fn, n = 240){
+  const N = Math.max(20, n + (n % 2));
+  const h = 1 / N;
+  let sum = fn(0) + fn(1);
+  for (let i=1;i<N;i++){
+    const t = i * h;
+    sum += (i % 2 === 0 ? 2 : 4) * fn(t);
+  }
+  return sum * h / 3;
+}
+
+function clothoidXY01(A, delta, phiS){
+  const phase = (t) => A*t*t + (delta - A)*t + phiS;
+  const X = simpsonIntegral01((t) => Math.cos(phase(t)), 240);
+  const Y = simpsonIntegral01((t) => Math.sin(phase(t)), 240);
+  return { X, Y };
+}
+
+function solveGRootsIntervalBnB(g, aMin, aMax, tol = 1e-3){
+  const queue = [{l:aMin, r:aMax, depth:0}];
+  const roots = [];
+  let guard = 0;
+
+  while (queue.length && guard < 5000){
+    guard++;
+    const cur = queue.pop();
+    const l = cur.l, r = cur.r;
+    const w = r - l;
+    const m = (l + r) * 0.5;
+
+    const gl = g(l), gm = g(m), gr = g(r);
+    const h = Math.max(1e-4, w * 0.1);
+    const d1 = Math.abs((g(Math.min(aMax, m+h)) - g(Math.max(aMin, m-h))) / (2*h));
+    const d2 = Math.abs((gm - gl) / Math.max(1e-9, (m-l)));
+    const d3 = Math.abs((gr - gm) / Math.max(1e-9, (r-m)));
+    const L = Math.max(d1, d2, d3) * 1.6 + 1e-6;
+
+    // |g(m)| - L*w/2 > 0 なら、この区間で 0 を取れない（Lipschitz上界による除外）
+    const noRootByBound = Math.abs(gm) - L * w * 0.5 > 0;
+    const signChange = gl === 0 || gr === 0 || (gl < 0 && gr > 0) || (gl > 0 && gr < 0);
+    if (noRootByBound && !signChange) continue;
+
+    if (w <= tol || cur.depth >= 32){
+      roots.push({l, r});
+      continue;
+    }
+
+    queue.push({l:m, r, depth:cur.depth+1});
+    queue.push({l, r:m, depth:cur.depth+1});
+  }
+
+  if (!roots.length) return [];
+  roots.sort((a,b)=>a.l-b.l);
+  const merged = [roots[0]];
+  for (let i=1;i<roots.length;i++){
+    const prev = merged[merged.length-1];
+    const cur = roots[i];
+    if (cur.l <= prev.r + tol*2){
+      prev.r = Math.max(prev.r, cur.r);
+    } else {
+      merged.push(cur);
+    }
+  }
+
+  const refined = [];
+  for (const iv of merged){
+    let l = iv.l, r = iv.r;
+    let gl = g(l), gr = g(r);
+    let a = (l+r)*0.5;
+
+    if ((gl < 0 && gr > 0) || (gl > 0 && gr < 0)){
+      for (let k=0;k<50;k++){
+        const m = 0.5*(l+r);
+        const gm = g(m);
+        a = m;
+        if (Math.abs(gm) < 1e-10 || (r-l) < 1e-7) break;
+        if ((gl < 0 && gm > 0) || (gl > 0 && gm < 0)){
+          r = m; gr = gm;
+        } else {
+          l = m; gl = gm;
+        }
+      }
+    } else {
+      // 符号変化が弱いケースは区間内で |g| が最小の点を代表値にする
+      let bestA = a, bestV = Math.abs(g(a));
+      for (let k=1;k<=20;k++){
+        const t = iv.l + (iv.r - iv.l) * (k / 20);
+        const v = Math.abs(g(t));
+        if (v < bestV){ bestV = v; bestA = t; }
+      }
+      a = bestA;
+    }
+
+    if (Math.abs(g(a)) < 5e-4) refined.push(a);
+  }
+
+  // 重複近傍を除去
+  refined.sort((x,y)=>x-y);
+  const uniq = [];
+  for (const a of refined){
+    if (!uniq.length || Math.abs(a - uniq[uniq.length-1]) > 2e-3) uniq.push(a);
+  }
+  return uniq;
+}
+
+function sampleSingleClothoidG1(s, g, step){
+  const dx = g.x - s.x;
+  const dy = g.y - s.y;
+  const R = Math.hypot(dx, dy);
+  if (R < 1e-9) {
+    return { points:[{x:s.x,y:s.y,yaw:s.yaw}], totalLength:0, segments:['CLOTHOID'], type:'SC-G1', rawSeg:[0] };
+  }
+
+  const chord = Math.atan2(dy, dx);
+  const phiS = angleWrap(s.yaw - chord);
+  const phiGBase = angleWrap(g.yaw - chord);
+  const deltaBase = phiGBase - phiS;
+
+  // Interval Branch-and-Bound で g(A)=0 の根候補を列挙
+  // （角度枝 delta+2πn も含めて探索し、誤差許容内で最短Lを採用）
+  const candidates = [];
+  for (let n=-3; n<=3; n++){
+    const delta = deltaBase + n * TAU;
+    const gA = (A) => clothoidXY01(A, delta, phiS).Y;
+
+    // A探索レンジは十分広く取り、根候補を取りこぼしにくくする
+    const AMax = Math.abs(delta) + 10 * Math.PI;
+    const roots = solveGRootsIntervalBnB(gA, -AMax, AMax, 1e-3);
+
+    for (const A of roots){
+      const { X, Y } = clothoidXY01(A, delta, phiS);
+      if (!Number.isFinite(X) || !Number.isFinite(Y) || X <= 1e-8) continue;
+      const L = R / X;
+      if (!Number.isFinite(L) || L <= 0 || L > 2000) continue;
+
+      const ds = Math.max(0.5, step || 1);
+      const nSeg = Math.max(2, Math.ceil(L / ds));
+      const c = Math.cos(chord), si = Math.sin(chord);
+      const points = [{ x:s.x, y:s.y, yaw:mod2pi(s.yaw) }];
+      let lx = 0, ly = 0;
+      for (let i=1;i<=nSeg;i++){
+        const sMid = (i - 0.5) * (L / nSeg);
+        const tau = sMid / L;
+        const headingRel = A * tau * tau + (delta - A) * tau + phiS;
+        const dsLocal = L / nSeg;
+        lx += Math.cos(headingRel) * dsLocal;
+        ly += Math.sin(headingRel) * dsLocal;
+        const tauEnd = i / nSeg;
+        const yawRel = A * tauEnd * tauEnd + (delta - A) * tauEnd + phiS;
+        points.push({
+          x: s.x + c * lx - si * ly,
+          y: s.y + si * lx + c * ly,
+          yaw: mod2pi(chord + yawRel),
+        });
+      }
+
+      const end = points[points.length - 1];
+      const posErr = Math.hypot(end.x - g.x, end.y - g.y);
+      const yawErr = Math.abs(angleWrap(end.yaw - g.yaw));
+      candidates.push({ L, points, posErr, yawErr, A, delta });
+    }
+  }
+
+  // 誤差許容内で最短を採用（保証付き方針）
+  const POS_TOL = 0.08; // mm
+  const YAW_TOL = deg2rad(0.2);
+  const feasible = candidates.filter(c => c.posErr <= POS_TOL && c.yawErr <= YAW_TOL);
+
+  let selected = null;
+  const pool = feasible.length ? feasible : candidates;
+  if (pool.length){
+    selected = pool.reduce((b, c) => c.L < b.L ? c : b);
+  }
+
+  if (!selected){
+    // 最後のフォールバック
+    const fallback = sampleLinear(s, g, step);
+    return { points:fallback.points, totalLength:fallback.totalLength, segments:['CLOTHOID'], type:'SC-G1', rawSeg:[fallback.totalLength] };
+  }
+
+  return {
+    points: selected.points,
+    totalLength: selected.L,
+    segments:['CLOTHOID'],
+    type:'SC-G1',
+    rawSeg:[selected.L],
+  };
+}
+
 function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
   const samplingStep = 1;
   const target = 1/R;
@@ -749,6 +981,11 @@ function generateCandidates(cfg){
   if (cfg.algorithm === 'linear') {
     const r = sampleLinear(cfg.start, cfg.goal, cfg.step);
     list.push({ id:'LINEAR', label:'LINEAR', ...r });
+    return list;
+  }
+  if (cfg.algorithm === 'single_clothoid_g1') {
+    const sc = sampleSingleClothoidG1(cfg.start, cfg.goal, cfg.step);
+    list.push({ id:'SC_G1', label:'SC-G1', ...sc });
     return list;
   }
   if (cfg.algorithm === 'reeds_shepp') {

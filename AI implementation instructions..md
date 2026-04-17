@@ -6,7 +6,7 @@
 
 ## 要件サマリ（`human requirement.md` 準拠）
 - 単一HTMLで 2D 経路比較ビューアを実装する。
-- 必須アルゴリズムは Linear / Dubins / CC-Dubins。
+- 必須アルゴリズムは Linear / Dubins / CC-Dubins / Single Clothoid G1。
 - 単位は位置系=mm、角度系=°（degree）。
 - 数値入力は整数のみとする（小数入力なし）。
 - 最短判定は距離のみで行う。
@@ -18,6 +18,7 @@
 - パス生成は入力変更の即時反映とし、生成ボタンは設置しない。
 - サンプリング間隔は 1mm 固定とし、ユーザー入力で変更させない。
 - CC-Dubins は厳密方式で実装する（近似実装は不可）。
+- 単一クロソイドG1補間は、始点・終点の位置と方位（G1）を満たす単一セグメントのクロソイドとして実装する。
 - CC-Dubins の参照ソースは Holger Banzhaf らの `steering_functions` とする。
 - GitHub Pages で公開し、ブラウザのみで利用可能にする。
 

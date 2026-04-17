@@ -588,6 +588,78 @@ function generateReedsSheppCandidatesAnalytic(cfg){
   return list;
 }
 
+function bestDubinsBetween(s, g, R, step){
+  const types=['LSL','RSR','LSR','RSL','RLR','LRL'];
+  let best = null;
+  for (const t of types){
+    const p = sampleDubinsByType(s, g, R, step, t);
+    if (!p) continue;
+    if (!best || p.totalLength < best.totalLength) best = { type:t, ...p };
+  }
+  return best;
+}
+
+function buildSwitchbackFromCusp(cfg, cusp, index){
+  const p1 = bestDubinsBetween(cfg.start, cusp, cfg.radius, cfg.step);
+  const p2 = bestDubinsBetween(cfg.goal, cusp, cfg.radius, cfg.step);
+  if (!p1 || !p2) return null;
+
+  const backPts = (p2.points || []).slice().reverse();
+  const points = [...(p1.points || []), ...backPts.slice(1)];
+  const rawSeg = [
+    ...(p1.rawSeg || []).map(v => Math.abs(v)),
+    ...(p2.rawSeg || []).slice().reverse().map(v => -Math.abs(v)),
+  ];
+  const segments = [
+    ...(p1.segments || []).map(m => `F-${m}`),
+    ...(p2.segments || []).slice().reverse().map(m => `B-${m}`),
+  ];
+  return {
+    id:`RS_CUSP_${index}`,
+    label:`RS-SW-${index}`,
+    points,
+    totalLength: p1.totalLength + p2.totalLength,
+    segments,
+    type:'RS-SWITCHBACK',
+    rawSeg,
+  };
+}
+
+function generateSwitchbackCandidatesByCuspSearch(cfg){
+  const sx = cfg.start.x, sy = cfg.start.y;
+  const gx = cfg.goal.x, gy = cfg.goal.y;
+  const mx = (sx + gx) * 0.5, my = (sy + gy) * 0.5;
+  const dx = gx - sx, dy = gy - sy;
+  const dist = Math.hypot(dx, dy);
+  const ux = dist > 1e-9 ? dx / dist : 1;
+  const uy = dist > 1e-9 ? dy / dist : 0;
+  const vx = -uy, vy = ux;
+  const scales = [0, 1.5, -1.5, 3.0, -3.0];
+  const along = [-0.3, 0, 0.3];
+  const yawSeeds = [
+    angleWrap(cfg.start.yaw),
+    angleWrap(cfg.goal.yaw),
+    angleWrap(Math.atan2(dy, dx)),
+    angleWrap(Math.atan2(dy, dx) + Math.PI),
+  ];
+
+  const list = [];
+  let idx = 1;
+  for (const a of along){
+    for (const s of scales){
+      const cx = mx + ux * (a * dist) + vx * (s * cfg.radius);
+      const cy = my + uy * (a * dist) + vy * (s * cfg.radius);
+      for (const yaw of yawSeeds){
+        const cusp = { x:cx, y:cy, yaw };
+        const c = buildSwitchbackFromCusp(cfg, cusp, idx++);
+        if (c) list.push(c);
+      }
+    }
+  }
+  list.sort((a,b) => a.totalLength - b.totalLength);
+  return list.slice(0, 8);
+}
+
 function generateReedsSheppCandidatesNumerical(cfg){
   const local = transformToLocal(cfg.start, cfg.goal, cfg.radius);
   const d = Math.hypot(local.x, local.y);
@@ -598,7 +670,6 @@ function generateReedsSheppCandidatesNumerical(cfg){
       for (const c of symbols){
         const w = `${a}${b}${c}`;
         if (w === 'SSS') continue;
-        if (a===b || b===c) continue;
         if (!w.includes('L') && !w.includes('R')) continue;
         words.push(w);
       }
@@ -614,6 +685,9 @@ function generateReedsSheppCandidatesNumerical(cfg){
     [0.2, Math.max(0.2, d), 0.2],
     [0.2, 0.2, Math.max(0.2, d)],
     [Math.PI/2, Math.max(0.2, d/2), Math.PI/2],
+    [Math.PI, 0.2, Math.PI],
+    [Math.max(0.2, d*0.5), Math.max(0.2, d*0.2), Math.max(0.2, d*0.5)],
+    [Math.max(0.2, d*0.2), Math.max(0.2, d*0.6), Math.max(0.2, d*0.2)],
   ];
 
   const list = [];
@@ -1053,8 +1127,9 @@ function generateCandidates(cfg){
   }
   if (cfg.algorithm === 'reeds_shepp') {
     const rsAnalytic = generateReedsSheppCandidatesAnalytic(cfg);
+    const rsSwitchback = generateSwitchbackCandidatesByCuspSearch(cfg);
     const rsNumerical = generateReedsSheppCandidatesNumerical(cfg);
-    const rs = mergeReedsSheppCandidates(rsAnalytic, rsNumerical);
+    const rs = mergeReedsSheppCandidates([...rsAnalytic, ...rsSwitchback], rsNumerical);
     if (rs.length) return rs;
     list.push({ id:'RS_1', label:'RS-1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
     return list;

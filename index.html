@@ -385,6 +385,13 @@ function drawBidirectionalRadiusGuides(pose, radius, color){
   drawCurvatureCircle({ x: pose.x - nx * R, y: pose.y - ny * R }, R, color, [2, 5]);
 }
 
+function effectiveBoundaryCurvature(k, radius){
+  if (!Number.isFinite(k)) return 0;
+  if (!Number.isFinite(radius) || radius <= 0) return k;
+  const target = 1 / radius;
+  return clamp(k, -target, target);
+}
+
 function drawStartIcon(start,cfg){
   const p = ws(start.x,start.y);
   ctx.fillStyle='#22c55e'; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,TAU); ctx.fill();
@@ -395,7 +402,8 @@ function drawStartIcon(start,cfg){
 
   if (cfg.showCurvature && cfg.algorithm !== 'linear'){
     if (cfg.algorithm === 'cc_dubins') {
-      if (Math.abs(start.k) > 1e-8) drawSignedCurvatureGuide(start, start.k, '#86efac');
+      const ks = effectiveBoundaryCurvature(start.k, cfg.radius);
+      if (Math.abs(ks) > 1e-8) drawSignedCurvatureGuide(start, ks, '#86efac');
       else drawBidirectionalRadiusGuides(start, cfg.radius, '#86efac');
     } else if (cfg.algorithm === 'dubins' || cfg.algorithm === 'reeds_shepp') {
       drawBidirectionalRadiusGuides(start, cfg.radius, '#86efac');
@@ -412,7 +420,8 @@ function drawGoalIcon(goal,cfg){
 
   if (cfg.showCurvature && cfg.algorithm !== 'linear'){
     if (cfg.algorithm === 'cc_dubins') {
-      if (Math.abs(goal.k) > 1e-8) drawSignedCurvatureGuide(goal, goal.k, '#fdba74');
+      const kg = effectiveBoundaryCurvature(goal.k, cfg.radius);
+      if (Math.abs(kg) > 1e-8) drawSignedCurvatureGuide(goal, kg, '#fdba74');
       else drawBidirectionalRadiusGuides(goal, cfg.radius, '#fdba74');
     } else if (cfg.algorithm === 'dubins' || cfg.algorithm === 'reeds_shepp') {
       drawBidirectionalRadiusGuides(goal, cfg.radius, '#fdba74');

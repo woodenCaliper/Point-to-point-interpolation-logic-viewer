@@ -394,9 +394,12 @@ function drawPath(candidate, idx, showPoints){
 
   if(showPoints){
     ctx.fillStyle = '#fcd34d';
-    // サンプリング点の実間隔（概ね1mm）を視覚的に確認できるよう、間引かず全点を描画する
-    for(let i=0;i<points.length;i++){
-      const q=ws(points[i].x, points[i].y);
+    // 描画負荷を抑えるため、1パスあたり最大200点を等間隔に可視化する
+    const maxVisiblePoints = 200;
+    const drawCount = Math.min(points.length, maxVisiblePoints);
+    for(let i=0;i<drawCount;i++){
+      const idx = drawCount === 1 ? 0 : Math.round(i * (points.length - 1) / (drawCount - 1));
+      const q=ws(points[idx].x, points[idx].y);
       ctx.beginPath(); ctx.arc(q.x,q.y,2,0,TAU); ctx.fill();
     }
   }

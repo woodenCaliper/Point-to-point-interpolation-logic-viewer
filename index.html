@@ -547,10 +547,6 @@ function rsPolar(x, y){
   return { r: Math.hypot(x, y), theta: Math.atan2(y, x) };
 }
 
-function rsReflectModes(modes){
-  return modes.map(m => m === 'L' ? 'R' : m === 'R' ? 'L' : 'S');
-}
-
 function rsBuildLabel(modes, lengths, prefix = 'RS'){
   const modeCode = (modes || []).join('');
   const dirCode = (lengths || []).map(v => v >= 0 ? 'F' : 'B').join('');
@@ -593,169 +589,156 @@ function sampleReedsSheppByModesAndLengths(s, R, modes, lengths){
   return { points:global, totalLength, segments, rawSeg };
 }
 
-function rsFamilyCSC_LSL(x, y, phi){
-  const p = rsPolar(x - Math.sin(phi), y + Math.cos(phi) - 1);
-  const t = mod2pi(p.theta);
-  const u = p.r;
-  const v = mod2pi(phi - t);
-  if (t < -1e-9 || u < -1e-9 || v < -1e-9) return null;
-  return { modes:['L','S','L'], lengths:[t,u,v], name:'LSL' };
+function rsSetPath(paths, lengths, ctypes){
+  const L = lengths.reduce((s, v) => s + Math.abs(v), 0);
+  if (L < 0.01) return paths;
+  for (const p of paths){
+    const sameType = p.ctypes.length === ctypes.length && p.ctypes.every((c, i) => c === ctypes[i]);
+    if (!sameType) continue;
+    const d = p.lengths.reduce((s, v) => s + Math.abs(v), 0) - L;
+    if (d <= 0.01) return paths;
+  }
+  paths.push({ ctypes:ctypes.slice(), lengths:lengths.slice(), L });
+  return paths;
 }
 
-function rsFamilyCSC_LSR(x, y, phi){
-  const p = rsPolar(x + Math.sin(phi), y - Math.cos(phi) - 1);
-  if (p.r < 2) return null;
-  const u = Math.sqrt(Math.max(0, p.r * p.r - 4));
-  const a = Math.atan2(2, u);
-  const t = mod2pi(p.theta + a);
-  const v = mod2pi(t - phi);
-  if (t < -1e-9 || u < -1e-9 || v < -1e-9) return null;
-  return { modes:['L','S','R'], lengths:[t,u,v], name:'LSR' };
+function rsStraightLeftStraight(x, y, phi){
+  const p = mod2pi(phi);
+  if (y > 0 && p > 0 && p < Math.PI * 0.99){
+    const xd = -y / Math.tan(p) + x;
+    const t = xd - Math.tan(p / 2);
+    const u = p;
+    const v = Math.hypot(x - xd, y) - Math.tan(p / 2);
+    return [true, t, u, v];
+  }
+  if (y < 0 && p > 0 && p < Math.PI * 0.99){
+    const xd = -y / Math.tan(p) + x;
+    const t = xd - Math.tan(p / 2);
+    const u = p;
+    const v = -Math.hypot(x - xd, y) - Math.tan(p / 2);
+    return [true, t, u, v];
+  }
+  return [false, 0, 0, 0];
 }
 
-function rsFamilyCCC_LRL(x, y, phi){
-  const p = rsPolar(x - Math.sin(phi), y + Math.cos(phi) - 1);
-  if (p.r > 4) return null;
-  const A = Math.acos(clamp(p.r / 4, -1, 1));
-  const t = mod2pi(Math.PI / 2 + p.theta + A);
-  const u = mod2pi(Math.PI - 2 * A);
-  const v = mod2pi(phi - t - u);
-  return { modes:['L','R','L'], lengths:[t,u,v], name:'LRL' };
+function rsLeftStraightLeft(x, y, phi){
+  const [u, t] = [rsPolar(x - Math.sin(phi), y - 1 + Math.cos(phi)).r, rsPolar(x - Math.sin(phi), y - 1 + Math.cos(phi)).theta];
+  if (t >= 0){
+    const v = mod2pi(phi - t);
+    if (v >= 0) return [true, t, u, v];
+  }
+  return [false, 0, 0, 0];
 }
 
-function rsFamilyCCCC_LRLR(x, y, phi){
-  const p = rsPolar(x + Math.sin(phi), y - Math.cos(phi) - 1);
-  const c = (p.r + 2) / 4;
-  if (c < -1 || c > 1) return null;
-  const u = Math.acos(c);
-  const t = mod2pi(Math.PI / 2 + p.theta + u);
-  const v = mod2pi(phi - t + 2 * u);
-  return { modes:['L','R','L','R'], lengths:[t,-u,-u,v], name:'LRLR' };
+function rsLeftStraightRight(x, y, phi){
+  const p = rsPolar(x + Math.sin(phi), y - 1 - Math.cos(phi));
+  const u1 = p.r * p.r;
+  if (u1 >= 4){
+    const u = Math.sqrt(u1 - 4);
+    const theta = Math.atan2(2, u);
+    const t = mod2pi(p.theta + theta);
+    const v = mod2pi(t - phi);
+    if (t >= 0 && v >= 0) return [true, t, u, v];
+  }
+  return [false, 0, 0, 0];
 }
 
-function rsSymmetryExpand(baseFamily, x, y, phi){
-  const out = [];
-  const add = (f, rx, ry, rphi, timeFlip=false, reflect=false) => {
-    const r = f(rx, ry, rphi);
-    if (!r) return;
-    let modes = r.modes.slice();
-    let lengths = r.lengths.slice();
-    if (timeFlip) lengths = lengths.map(v => -v).reverse(), modes = modes.slice().reverse();
-    if (reflect) modes = rsReflectModes(modes);
-    out.push({ modes, lengths });
-  };
-  add(baseFamily, x, y, phi, false, false);
-  add(baseFamily, x, -y, -phi, false, true);
-  add(baseFamily, -x, y, -phi, true, false);
-  add(baseFamily, -x, -y, phi, true, true);
-  return out;
+function rsLeftRightLeft(x, y, phi){
+  const p = rsPolar(x - Math.sin(phi), y - 1 + Math.cos(phi));
+  if (p.r <= 4){
+    const u = -2 * Math.asin(0.25 * p.r);
+    const t = mod2pi(p.theta + 0.5 * u + Math.PI);
+    const v = mod2pi(phi - t + u);
+    if (t >= 0 && u <= 0) return [true, t, u, v];
+  }
+  return [false, 0, 0, 0];
+}
+
+function rsStraightCurveStraight(x, y, phi, paths){
+  let ok, t, u, v;
+  [ok, t, u, v] = rsStraightLeftStraight(x, y, phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['S', 'L', 'S']);
+  [ok, t, u, v] = rsStraightLeftStraight(x, -y, -phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['S', 'R', 'S']);
+  return paths;
+}
+
+function rsCurveStraightCurve(x, y, phi, paths){
+  let ok, t, u, v;
+  [ok, t, u, v] = rsLeftStraightLeft(x, y, phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['L', 'S', 'L']);
+  [ok, t, u, v] = rsLeftStraightLeft(-x, y, -phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['L', 'S', 'L']);
+  [ok, t, u, v] = rsLeftStraightLeft(x, -y, -phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['R', 'S', 'R']);
+  [ok, t, u, v] = rsLeftStraightLeft(-x, -y, phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['R', 'S', 'R']);
+
+  [ok, t, u, v] = rsLeftStraightRight(x, y, phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['L', 'S', 'R']);
+  [ok, t, u, v] = rsLeftStraightRight(-x, y, -phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['L', 'S', 'R']);
+  [ok, t, u, v] = rsLeftStraightRight(x, -y, -phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['R', 'S', 'L']);
+  [ok, t, u, v] = rsLeftStraightRight(-x, -y, phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['R', 'S', 'L']);
+  return paths;
+}
+
+function rsCurveCurveCurve(x, y, phi, paths){
+  let ok, t, u, v;
+  [ok, t, u, v] = rsLeftRightLeft(x, y, phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['L', 'R', 'L']);
+  [ok, t, u, v] = rsLeftRightLeft(-x, y, -phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['L', 'R', 'L']);
+  [ok, t, u, v] = rsLeftRightLeft(x, -y, -phi);
+  if (ok) paths = rsSetPath(paths, [t, u, v], ['R', 'L', 'R']);
+  [ok, t, u, v] = rsLeftRightLeft(-x, -y, phi);
+  if (ok) paths = rsSetPath(paths, [-t, -u, -v], ['R', 'L', 'R']);
+
+  const xb = x * Math.cos(phi) + y * Math.sin(phi);
+  const yb = x * Math.sin(phi) - y * Math.cos(phi);
+  [ok, t, u, v] = rsLeftRightLeft(xb, yb, phi);
+  if (ok) paths = rsSetPath(paths, [v, u, t], ['L', 'R', 'L']);
+  [ok, t, u, v] = rsLeftRightLeft(-xb, yb, -phi);
+  if (ok) paths = rsSetPath(paths, [-v, -u, -t], ['L', 'R', 'L']);
+  [ok, t, u, v] = rsLeftRightLeft(xb, -yb, -phi);
+  if (ok) paths = rsSetPath(paths, [v, u, t], ['R', 'L', 'R']);
+  [ok, t, u, v] = rsLeftRightLeft(-xb, -yb, phi);
+  if (ok) paths = rsSetPath(paths, [-v, -u, -t], ['R', 'L', 'R']);
+  return paths;
 }
 
 function generateReedsSheppCandidatesReference(cfg){
   const local = transformToLocal(cfg.start, cfg.goal, cfg.radius);
-  const families = [rsFamilyCSC_LSL, rsFamilyCSC_LSR, rsFamilyCCC_LRL, rsFamilyCCCC_LRLR];
+  const x = local.x, y = local.y, phi = local.th;
+
+  let rsPaths = [];
+  rsPaths = rsStraightCurveStraight(x, y, phi, rsPaths);
+  rsPaths = rsCurveStraightCurve(x, y, phi, rsPaths);
+  rsPaths = rsCurveCurveCurve(x, y, phi, rsPaths);
+
   const list = [];
   const seen = new Set();
-  for (const fam of families){
-    const expanded = rsSymmetryExpand(fam, local.x, local.y, local.th);
-    for (const cand of expanded){
-      const path = sampleReedsSheppByModesAndLengths(cfg.start, cfg.radius, cand.modes, cand.lengths);
-      const end = path.points[path.points.length - 1];
-      if (!end) continue;
-      const posErr = Math.hypot(end.x - cfg.goal.x, end.y - cfg.goal.y);
-      const yawErr = Math.abs(angleWrap(end.yaw - cfg.goal.yaw));
-      if (posErr > 1.0 || yawErr > deg2rad(2.0)) continue;
-      const key = path.rawSeg.map(v => v.toFixed(3)).join(',');
-      if (seen.has(key)) continue;
-      seen.add(key);
-      list.push({
-        id:`RS_REF_${list.length+1}`,
-        label: rsBuildLabel(cand.modes, cand.lengths, 'RS-REF'),
-        ...path,
-        type:'RS-REFERENCE',
-      });
-    }
-  }
-  const hasSwitchback = list.some(p => {
-    const signs = (p.rawSeg || []).map(v => Math.sign(v)).filter(Boolean);
-    return signs.some((s, i) => i > 0 && s !== signs[i - 1]);
-  });
-  if (!hasSwitchback) {
-    const extra = generateReferenceSwitchbackCandidates(cfg);
-    list.push(...extra);
+  for (const p of rsPaths){
+    const path = sampleReedsSheppByModesAndLengths(cfg.start, cfg.radius, p.ctypes, p.lengths);
+    const end = path.points[path.points.length - 1];
+    if (!end) continue;
+    const posErr = Math.hypot(end.x - cfg.goal.x, end.y - cfg.goal.y);
+    const yawErr = Math.abs(angleWrap(end.yaw - cfg.goal.yaw));
+    if (posErr > 1.0 || yawErr > deg2rad(2.0)) continue;
+
+    const key = `${p.ctypes.join('')}:${path.rawSeg.map(v => v.toFixed(3)).join(',')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push({
+      id:`RS_REF_${list.length+1}`,
+      label: rsBuildLabel(p.ctypes, p.lengths, 'RS-REF'),
+      ...path,
+      type:'RS-REFERENCE',
+    });
   }
   return list.sort((a,b) => a.totalLength - b.totalLength);
-}
-
-function bestDubinsBetween(s, g, R, step){
-  const types=['LSL','RSR','LSR','RSL','RLR','LRL'];
-  let best = null;
-  for (const t of types){
-    const p = sampleDubinsByType(s, g, R, step, t);
-    if (!p) continue;
-    if (!best || p.totalLength < best.totalLength) best = { type:t, ...p };
-  }
-  return best;
-}
-
-function buildReferenceSwitchbackCandidate(cfg, cusp, index){
-  const p1 = bestDubinsBetween(cfg.start, cusp, cfg.radius, cfg.step);
-  const p2 = bestDubinsBetween(cfg.goal, cusp, cfg.radius, cfg.step);
-  if (!p1 || !p2) return null;
-
-  const backPts = (p2.points || []).slice().reverse();
-  const points = [...(p1.points || []), ...backPts.slice(1)];
-  const rawSeg = [
-    ...(p1.rawSeg || []).map(v => Math.abs(v)),
-    ...(p2.rawSeg || []).slice().reverse().map(v => -Math.abs(v)),
-  ];
-  const segments = [
-    ...(p1.segments || []).map(m => `F-${m}`),
-    ...(p2.segments || []).slice().reverse().map(m => `B-${m}`),
-  ];
-  return {
-    id:`RS_REF_SW_${index}`,
-    label:`${rsBuildLabel([...p1.segments, ...p2.segments.slice().reverse()], rawSeg, 'RS-REF-SW')}#${index}`,
-    points,
-    totalLength: p1.totalLength + p2.totalLength,
-    segments,
-    type:'RS-REFERENCE-SWITCHBACK',
-    rawSeg,
-  };
-}
-
-function generateReferenceSwitchbackCandidates(cfg){
-  const sx = cfg.start.x, sy = cfg.start.y;
-  const gx = cfg.goal.x, gy = cfg.goal.y;
-  const mx = (sx + gx) * 0.5, my = (sy + gy) * 0.5;
-  const dx = gx - sx, dy = gy - sy;
-  const dist = Math.hypot(dx, dy);
-  const ux = dist > 1e-9 ? dx / dist : 1;
-  const uy = dist > 1e-9 ? dy / dist : 0;
-  const vx = -uy, vy = ux;
-  const scales = [0, 1.5, -1.5, 3.0, -3.0];
-  const along = [-0.3, 0, 0.3];
-  const yawSeeds = [
-    angleWrap(cfg.start.yaw),
-    angleWrap(cfg.goal.yaw),
-    angleWrap(Math.atan2(dy, dx)),
-    angleWrap(Math.atan2(dy, dx) + Math.PI),
-  ];
-
-  const list = [];
-  let idx = 1;
-  for (const a of along){
-    for (const s of scales){
-      const cx = mx + ux * (a * dist) + vx * (s * cfg.radius);
-      const cy = my + uy * (a * dist) + vy * (s * cfg.radius);
-      for (const yaw of yawSeeds){
-        const c = buildReferenceSwitchbackCandidate(cfg, { x:cx, y:cy, yaw }, idx++);
-        if (c) list.push(c);
-      }
-    }
-  }
-  list.sort((a,b) => a.totalLength - b.totalLength);
-  return list.slice(0, 8);
 }
 
 function integrateClothoidNormalized(k0, sigma, length, samplingStep = 1){

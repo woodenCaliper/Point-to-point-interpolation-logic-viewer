@@ -58,6 +58,7 @@
         <option value="dubins">Dubins Path</option>
         <option value="reeds_shepp">Reeds-Shepp Path</option>
         <option value="cc_dubins">CC-Dubins Path</option>
+        <option value="single_clothoid_g1">単一クロソイド G1</option>
       </select>
     </div>
 
@@ -180,8 +181,10 @@ function normalizeAngleInput(id){
 
 function updateInputVisibility(){
   const algo = $('algorithm').value;
-  document.querySelectorAll('.only-theta').forEach(e => e.style.display = (algo === 'linear') ? 'none' : 'grid');
-  document.querySelectorAll('.only-turn').forEach(e => e.style.display = (algo === 'linear') ? 'none' : 'grid');
+  const needsTheta = algo !== 'linear';
+  const needsRadius = (algo === 'dubins' || algo === 'reeds_shepp' || algo === 'cc_dubins');
+  document.querySelectorAll('.only-theta').forEach(e => e.style.display = needsTheta ? 'grid' : 'none');
+  document.querySelectorAll('.only-turn').forEach(e => e.style.display = needsRadius ? 'grid' : 'none');
   document.querySelectorAll('.only-curv').forEach(e => e.style.display = (algo === 'cc_dubins') ? 'grid' : 'none');
 }
 
@@ -224,6 +227,8 @@ function gatherInput(){
 
   if (algorithm !== 'linear') {
     syaw = parseField('syaw'); gyaw = parseField('gyaw');
+  }
+  if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') {
     radius = parseField('radius', v => v > 0);
   }
   if (algorithm === 'cc_dubins') {
@@ -232,7 +237,8 @@ function gatherInput(){
   }
 
   const required = { sx, sy, gx, gy };
-  if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw, radius });
+  if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw });
+  if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') Object.assign(required, { radius });
   if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
 
   for (const [k,v] of Object.entries(required)) {
@@ -581,6 +587,109 @@ function generateReedsSheppCandidates(cfg){
   return list;
 }
 
+
+function integrateClothoidNormalized(k0, sigma, length, samplingStep = 1){
+  const pts = [{ x:0, y:0, yaw:0, s:0, k:k0 }];
+  const st = { x:0, y:0, yaw:0, k:k0 };
+  const n = Math.max(2, Math.ceil(length / Math.max(1e-6, samplingStep)));
+  const ds = length / n;
+
+  for (let i=0;i<n;i++){
+    const c = Math.cos(st.yaw);
+    const si = Math.sin(st.yaw);
+    const k = st.k;
+    const ds2 = ds * ds;
+    const ds3 = ds2 * ds;
+    const ds4 = ds3 * ds;
+    const ds5 = ds4 * ds;
+
+    st.x += c*ds
+      - 0.5*k*si*ds2
+      + ((-sigma*si - k*k*c)/6)*ds3
+      + ((k*k*k*si - 3*k*sigma*c)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*c + 6*k*k*sigma*si)/120)*ds5;
+
+    st.y += si*ds
+      + 0.5*k*c*ds2
+      + ((sigma*c - k*k*si)/6)*ds3
+      + ((-k*k*k*c - 3*k*sigma*si)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*si - 6*k*k*sigma*c)/120)*ds5;
+
+    st.yaw = angleWrap(st.yaw + k*ds + 0.5*sigma*ds2);
+    st.k += sigma * ds;
+    pts.push({ x:st.x, y:st.y, yaw:st.yaw, s:(i+1)*ds, k:st.k });
+  }
+
+  return pts;
+}
+
+function sampleSingleClothoidG1(s, g, step){
+  const dx = g.x - s.x;
+  const dy = g.y - s.y;
+  const c = Math.cos(s.yaw), si = Math.sin(s.yaw);
+  const gxLocal = c * dx + si * dy;
+  const gyLocal = -si * dx + c * dy;
+  const dYaw = angleWrap(g.yaw - s.yaw);
+
+  let L = Math.max(1, Math.hypot(gxLocal, gyLocal));
+  let k0 = 0;
+
+  const evalLocal = (Lv, k0v) => {
+    const sigma = (2 * (dYaw - k0v * Lv)) / (Lv * Lv);
+    const samples = integrateClothoidNormalized(k0v, sigma, Lv, 1);
+    const end = samples[samples.length - 1];
+    return { sigma, samples, end };
+  };
+
+  for (let iter=0; iter<24; iter++){
+    const base = evalLocal(L, k0);
+    const ex = gxLocal - base.end.x;
+    const ey = gyLocal - base.end.y;
+    if (Math.hypot(ex, ey) < 5e-3) break;
+
+    const hL = Math.max(1e-3, L * 1e-3);
+    const hk = 1e-4;
+
+    const eL = evalLocal(L + hL, k0).end;
+    const ek = evalLocal(L, k0 + hk).end;
+
+    const J = [
+      [(eL.x - base.end.x) / hL, (ek.x - base.end.x) / hk],
+      [(eL.y - base.end.y) / hL, (ek.y - base.end.y) / hk],
+    ];
+
+    const det = J[0][0] * J[1][1] - J[0][1] * J[1][0];
+    if (Math.abs(det) < 1e-10) break;
+
+    const dL = ( ex * J[1][1] - ey * J[0][1]) / det;
+    const dk = (-ex * J[1][0] + ey * J[0][0]) / det;
+
+    const stepNorm = Math.hypot(dL, dk * Math.max(1, L));
+    const gain = stepNorm > 20 ? 20 / stepNorm : 1;
+
+    L = Math.max(0.5, L + gain * dL);
+    k0 = clamp(k0 + gain * dk, -1, 1);
+  }
+
+  const solved = evalLocal(L, k0);
+  const points = solved.samples.map(p => ({
+    x: s.x + c * p.x - si * p.y,
+    y: s.y + si * p.x + c * p.y,
+    yaw: mod2pi(s.yaw + p.yaw),
+  }));
+
+  let totalLength = 0;
+  for (let i=1;i<points.length;i++) totalLength += Math.hypot(points[i].x-points[i-1].x, points[i].y-points[i-1].y);
+
+  return {
+    points,
+    totalLength,
+    segments:['CLOTHOID'],
+    type:'SC-G1',
+    rawSeg:[L],
+  };
+}
+
 function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
   const samplingStep = 1;
   const target = 1/R;
@@ -749,6 +858,11 @@ function generateCandidates(cfg){
   if (cfg.algorithm === 'linear') {
     const r = sampleLinear(cfg.start, cfg.goal, cfg.step);
     list.push({ id:'LINEAR', label:'LINEAR', ...r });
+    return list;
+  }
+  if (cfg.algorithm === 'single_clothoid_g1') {
+    const sc = sampleSingleClothoidG1(cfg.start, cfg.goal, cfg.step);
+    list.push({ id:'SC_G1', label:'SC-G1', ...sc });
     return list;
   }
   if (cfg.algorithm === 'reeds_shepp') {

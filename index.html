@@ -551,6 +551,12 @@ function rsReflectModes(modes){
   return modes.map(m => m === 'L' ? 'R' : m === 'R' ? 'L' : 'S');
 }
 
+function rsBuildLabel(modes, lengths, prefix = 'RS'){
+  const modeCode = (modes || []).join('');
+  const dirCode = (lengths || []).map(v => v >= 0 ? 'F' : 'B').join('');
+  return `${prefix}-${modeCode}${dirCode ? `-${dirCode}` : ''}`;
+}
+
 function sampleReedsSheppByModesAndLengths(s, R, modes, lengths){
   const q = { x:0, y:0, yaw:0 };
   const points = [{ ...q }];
@@ -664,7 +670,7 @@ function generateReedsSheppCandidatesReference(cfg){
       seen.add(key);
       list.push({
         id:`RS_REF_${list.length+1}`,
-        label:`RS-REF-${list.length+1}`,
+        label: rsBuildLabel(cand.modes, cand.lengths, 'RS-REF'),
         ...path,
         type:'RS-REFERENCE',
       });
@@ -679,7 +685,7 @@ function reverseDubinsAsBackwardRS(base, label){
   const revPts = (base.points || []).slice().reverse().map(p => ({ x:p.x, y:p.y, yaw:mod2pi(p.yaw) }));
   return {
     id:`RS_ANALYTIC_B_${label}`,
-    label:`RS-${label}-B`,
+    label: rsBuildLabel(revModes, revRaw, 'RS-ANL'),
     points: revPts,
     totalLength: base.totalLength,
     segments: revModes.map(m => `B-${m}`),
@@ -704,7 +710,7 @@ function generateReedsSheppCandidatesAnalytic(cfg){
     if (fwd) {
       pushUnique({
         id:`RS_ANALYTIC_F_${t}`,
-        label:`RS-${t}-F`,
+        label: rsBuildLabel(fwd.segments || [], fwd.rawSeg || [], 'RS-ANL'),
         ...fwd,
         type:`RS-ANALYTIC-F-${t}`,
         segments: (fwd.segments || []).map(m => `F-${m}`),
@@ -746,7 +752,7 @@ function buildSwitchbackFromCusp(cfg, cusp, index){
   ];
   return {
     id:`RS_CUSP_${index}`,
-    label:`RS-SW-${index}`,
+    label: `${rsBuildLabel([...p1.segments, ...p2.segments.slice().reverse()], rawSeg, 'RS-SW')}#${index}`,
     points,
     totalLength: p1.totalLength + p2.totalLength,
     segments,
@@ -833,7 +839,11 @@ function generateReedsSheppCandidatesNumerical(cfg){
         const key = path.rawSeg.map(v => v.toFixed(3)).join(',');
         if (seen.has(key)) continue;
         seen.add(key);
-        list.push({ id:`RS_${w}_${gp.join('')}_${list.length+1}`, label:`RS-${w}`, ...path });
+        list.push({
+          id:`RS_${w}_${gp.join('')}_${list.length+1}`,
+          label: rsBuildLabel(w.split(''), path.rawSeg, 'RS-NUM'),
+          ...path,
+        });
       }
     }
   }

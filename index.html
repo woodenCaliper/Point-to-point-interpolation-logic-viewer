@@ -636,6 +636,20 @@ function generateReedsSheppCandidatesNumerical(cfg){
   return list;
 }
 
+function mergeReedsSheppCandidates(analytic, numerical){
+  const merged = [];
+  const seen = new Set();
+  const push = (c) => {
+    const key = (c.rawSeg || []).map(v => v.toFixed(2)).join(',');
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(c);
+  };
+  analytic.forEach(push);
+  numerical.forEach(push);
+  return merged;
+}
+
 
 function integrateClothoidNormalized(k0, sigma, length, samplingStep = 1){
   const pts = [{ x:0, y:0, yaw:0, s:0, k:k0 }];
@@ -1039,9 +1053,9 @@ function generateCandidates(cfg){
   }
   if (cfg.algorithm === 'reeds_shepp') {
     const rsAnalytic = generateReedsSheppCandidatesAnalytic(cfg);
-    if (rsAnalytic.length) return rsAnalytic;
     const rsNumerical = generateReedsSheppCandidatesNumerical(cfg);
-    if (rsNumerical.length) return rsNumerical;
+    const rs = mergeReedsSheppCandidates(rsAnalytic, rsNumerical);
+    if (rs.length) return rs;
     list.push({ id:'RS_1', label:'RS-1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
     return list;
   }

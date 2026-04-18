@@ -1514,18 +1514,38 @@ window.addEventListener('mousemove', (e) => {
     $(id).addEventListener('change', () => { clampInputToLimits(id); recalculate(); });
   });
 
-['radius','sigmaMax','ccTransition'].forEach(id => {
+function commitCCInputs(source){
+  clampInputToLimits(source);
+  state.lastCCInputSource = source;
+  syncCCParameterInputs(state.lastCCInputSource);
+  recalculate();
+}
+
+['radius'].forEach(id => {
   $(id).addEventListener('input', () => {
     clampInputToLimits(id);
-    state.lastCCInputSource = (id === 'ccTransition') ? 'ccTransition' : 'sigmaMax';
+    state.lastCCInputSource = 'sigmaMax';
     syncCCParameterInputs(state.lastCCInputSource);
     recalculate();
   });
   $(id).addEventListener('change', () => {
     clampInputToLimits(id);
-    state.lastCCInputSource = (id === 'ccTransition') ? 'ccTransition' : 'sigmaMax';
+    state.lastCCInputSource = 'sigmaMax';
     syncCCParameterInputs(state.lastCCInputSource);
     recalculate();
+  });
+});
+
+['sigmaMax','ccTransition'].forEach(id => {
+  $(id).addEventListener('input', () => {
+    state.lastCCInputSource = id;
+  });
+  $(id).addEventListener('change', () => commitCCInputs(id));
+  $(id).addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    commitCCInputs(id);
+    $(id).blur();
   });
 });
 

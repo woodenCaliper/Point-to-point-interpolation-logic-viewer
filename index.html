@@ -133,6 +133,7 @@ const state = {
   invalidReasons: [],
   shortestOnly: false,
   beforeShortestVisible: [],
+  hoverInfo: null,
   isDragging: false,
   lastMouse: { x: 0, y: 0 },
 };
@@ -1370,6 +1371,116 @@ function formatNumber(v){
   return v.toFixed(3);
 }
 
+function formatDeg(v){
+  return formatNumber(wrapDeg180(v * 180 / Math.PI));
+}
+
+function computePointCurvature(points, idx){
+  if (!points || points.length < 2 || idx < 0 || idx >= points.length) return 0;
+  if (points.length === 2) {
+    const p0 = points[0], p1 = points[1];
+    const ds = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    if (ds < 1e-9) return 0;
+    return angleWrap((p1.yaw ?? 0) - (p0.yaw ?? 0)) / ds;
+  }
+  if (idx <= 0) {
+    const p0 = points[0], p1 = points[1];
+    const ds = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    if (ds < 1e-9) return 0;
+    return angleWrap((p1.yaw ?? 0) - (p0.yaw ?? 0)) / ds;
+  }
+  if (idx >= points.length - 1) {
+    const p0 = points[points.length - 2], p1 = points[points.length - 1];
+    const ds = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    if (ds < 1e-9) return 0;
+    return angleWrap((p1.yaw ?? 0) - (p0.yaw ?? 0)) / ds;
+  }
+  const pa = points[idx - 1];
+  const pb = points[idx + 1];
+  const ds = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+  if (ds < 1e-9) return 0;
+  return angleWrap((pb.yaw ?? 0) - (pa.yaw ?? 0)) / ds;
+}
+
+function updateHoverInfo(mousePx, mousePy){
+  state.hoverInfo = null;
+  if (!state.result) return;
+
+  const thresholdPx = 14;
+  let best = null;
+  state.result.paths.forEach((path) => {
+    if (!path.visible || !path.points?.length) return;
+    for (let i = 0; i < path.points.length; i++) {
+      const p = path.points[i];
+      const sp = ws(p.x, p.y);
+      const dx = sp.x - mousePx;
+      const dy = sp.y - mousePy;
+      const d2 = dx * dx + dy * dy;
+      if (!best || d2 < best.d2) {
+        best = { d2, p, i, path };
+      }
+    }
+  });
+
+  if (!best || best.d2 > thresholdPx * thresholdPx) return;
+  const k = computePointCurvature(best.path.points, best.i);
+  state.hoverInfo = {
+    screenX: mousePx,
+    screenY: mousePy,
+    x: best.p.x,
+    y: best.p.y,
+    yaw: best.p.yaw ?? 0,
+    curvatureScaled: k * 1000,
+  };
+}
+
+function drawHoverInfo(){
+  if (!state.hoverInfo) return;
+  const info = state.hoverInfo;
+  const lines = [
+    `x: ${formatNumber(info.x)} mm`,
+    `y: ${formatNumber(info.y)} mm`,
+    `θ: ${formatDeg(info.yaw)} °`,
+    `曲率: ${formatNumber(info.curvatureScaled)} [10^-3/mm]`,
+  ];
+
+  ctx.font = '12px sans-serif';
+  const padding = 8;
+  const lineH = 16;
+  const textW = Math.max(...lines.map(t => ctx.measureText(t).width));
+  const boxW = textW + padding * 2;
+  const boxH = lineH * lines.length + padding * 2;
+  const margin = 10;
+  let bx = info.screenX + 14;
+  let by = info.screenY + 14;
+  if (bx + boxW + margin > canvas.clientWidth) bx = info.screenX - boxW - 14;
+  if (by + boxH + margin > canvas.clientHeight) by = info.screenY - boxH - 14;
+  bx = clamp(bx, margin, canvas.clientWidth - boxW - margin);
+  by = clamp(by, margin, canvas.clientHeight - boxH - margin);
+
+  const marker = ws(info.x, info.y);
+  ctx.fillStyle = '#f8fafc';
+  ctx.beginPath();
+  ctx.arc(marker.x, marker.y, 3, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = '#0b1220';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(6, 12, 20, 0.9)';
+  ctx.strokeStyle = '#6ca8e6';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.rect(bx, by, boxW, boxH);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#dbeafe';
+  lines.forEach((line, i) => {
+    ctx.fillText(line, bx + padding, by + padding + 12 + i * lineH);
+  });
+}
+
 function renderStats(){
   const warn = $('warn');
   const stats = $('stats');
@@ -1421,6 +1532,7 @@ function render(){
   }
 
   drawAxisGizmo();
+  drawHoverInfo();
   renderStats();
 }
 
@@ -1451,6 +1563,7 @@ canvas.addEventListener('wheel', (e) => {
 canvas.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   state.isDragging = true;
+  state.hoverInfo = null;
   canvas.classList.add('dragging');
   state.lastMouse = { x: e.clientX, y: e.clientY };
 });
@@ -1467,6 +1580,21 @@ window.addEventListener('mousemove', (e) => {
   state.camera.cx -= dx / state.camera.scale;
   state.camera.cy += dy / state.camera.scale;
   state.lastMouse = { x: e.clientX, y: e.clientY };
+  render();
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (state.isDragging || !state.result) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  updateHoverInfo(mx, my);
+  render();
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (!state.hoverInfo) return;
+  state.hoverInfo = null;
   render();
 });
 

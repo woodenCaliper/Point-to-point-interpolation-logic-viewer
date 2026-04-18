@@ -133,6 +133,7 @@ const state = {
   invalidReasons: [],
   shortestOnly: false,
   beforeShortestVisible: [],
+  hover: null,
   isDragging: false,
   lastMouse: { x: 0, y: 0 },
 };
@@ -319,6 +320,77 @@ function sw(px, py){
   };
 }
 
+function rad2deg(r){ return r * 180 / Math.PI; }
+
+function estimateSignedCurvature(points, idx){
+  if (!points || points.length < 3) return 0;
+  const i0 = Math.max(0, idx - 1);
+  const i2 = Math.min(points.length - 1, idx + 1);
+  if (i0 === idx || i2 === idx || i0 === i2) return 0;
+  const p0 = points[i0], p1 = points[idx], p2 = points[i2];
+  const a = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+  const b = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  const c = Math.hypot(p2.x - p0.x, p2.y - p0.y);
+  const denom = a * b * c;
+  if (denom < 1e-9) return 0;
+  const cross = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+  const k = (2 * cross) / denom;
+  return Number.isFinite(k) ? k : 0;
+}
+
+function pointDistance(a, b){
+  return Math.hypot((b.x || 0) - (a.x || 0), (b.y || 0) - (a.y || 0));
+}
+
+function pointCurvature(points, idx){
+  const p = points?.[idx];
+  if (!p) return 0;
+  return Number.isFinite(p.k) ? p.k : estimateSignedCurvature(points, idx);
+}
+
+function estimateCurvatureRate(points, idx){
+  if (!points || points.length < 2 || idx < 0 || idx >= points.length) return 0;
+  const i0 = Math.max(0, idx - 1);
+  const i2 = Math.min(points.length - 1, idx + 1);
+  if (i0 === i2) return 0;
+  const k0 = pointCurvature(points, i0);
+  const k2 = pointCurvature(points, i2);
+  const ds = pointDistance(points[i0], points[i2]);
+  if (!Number.isFinite(ds) || ds < 1e-9) return 0;
+  const sigma = (k2 - k0) / ds;
+  return Number.isFinite(sigma) ? sigma : 0;
+}
+
+function updateHoverFromScreenPoint(px, py){
+  state.hover = null;
+  if (!state.result) return;
+  let best = null;
+  const hitPx = 10;
+  const hitPx2 = hitPx * hitPx;
+  state.result.paths.forEach((path, pathIdx) => {
+    if (!path.visible || !path.points?.length) return;
+    for (let i = 0; i < path.points.length; i++) {
+      const p = path.points[i];
+      const s = ws(p.x, p.y);
+      const dx = s.x - px;
+      const dy = s.y - py;
+      const d2 = dx*dx + dy*dy;
+      if (d2 > hitPx2) continue;
+      if (!best || d2 < best.d2) best = { pathIdx, idx:i, d2, p, sx:s.x, sy:s.y, path };
+    }
+  });
+  if (!best) return;
+  const sigma = estimateCurvatureRate(best.path.points, best.idx);
+  state.hover = {
+    sx: best.sx,
+    sy: best.sy,
+    x: best.p.x,
+    y: best.p.y,
+    thetaDeg: wrapDeg180(rad2deg(best.p.yaw || 0)),
+    curvatureRate: sigma,
+  };
+}
+
 function fitView(points, s, g){
   const list = [...points, {x:s.x,y:s.y}, {x:g.x,y:g.y}];
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
@@ -368,6 +440,40 @@ function drawAxisGizmo(){
   const mmStep = gridStepForScale();
   ctx.fillStyle = '#d3e7ff';
   ctx.fillText(`Grid: ${formatNumber(mmStep)} mm`, ox+44, oy-9);
+}
+
+function drawHoverOverlay(){
+  if (!state.hover) return;
+  const infoLines = [
+    `x: ${formatNumber(state.hover.x)} mm`,
+    `y: ${formatNumber(state.hover.y)} mm`,
+    `θ: ${formatNumber(state.hover.thetaDeg)} °`,
+    `曲率変化率 σ: ${formatSigmaScaled(state.hover.curvatureRate)} [10^-3/mm²]`,
+  ];
+  ctx.save();
+  ctx.font = '12px sans-serif';
+  const padding = 8;
+  const lineH = 16;
+  const w = Math.max(...infoLines.map(t => ctx.measureText(t).width)) + padding * 2;
+  const h = infoLines.length * lineH + padding * 2 - 4;
+  let x = state.hover.sx + 12;
+  let y = state.hover.sy - h - 12;
+  x = clamp(x, 6, canvas.clientWidth - w - 6);
+  y = clamp(y, 6, canvas.clientHeight - h - 6);
+
+  ctx.fillStyle = 'rgba(10, 16, 24, 0.9)';
+  ctx.strokeStyle = '#4f7fb4';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#d6e8fa';
+  infoLines.forEach((line, i) => {
+    ctx.fillText(line, x + padding, y + padding + 11 + i * lineH);
+  });
+  ctx.restore();
 }
 
 function drawHeadingArrow(originScreen, yaw, color){
@@ -1043,7 +1149,7 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
   const ks = clamp(s.k||0, -target, target);
   const kg = clamp(g.k||0, -target, target);
 
-  const pts = [{x:s.x, y:s.y, yaw:s.yaw}];
+  const pts = [{x:s.x, y:s.y, yaw:s.yaw, k:ks}];
   const st = {x:s.x, y:s.y, yaw:s.yaw, k:ks};
 
   // Banzhaf系実装に合わせ、クロソイド区間は台形積分ではなく
@@ -1072,7 +1178,7 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
 
     st.yaw = mod2pi(st.yaw + k*ds + 0.5*sigma*ds2);
     st.k += sigma * ds;
-    pts.push({x:st.x, y:st.y, yaw:st.yaw});
+    pts.push({x:st.x, y:st.y, yaw:st.yaw, k:st.k});
   };
 
   const segs = base.segments;
@@ -1320,6 +1426,7 @@ function recalculate(){
   updateSigmaReference();
   normalizeAngleInput('syaw');
   normalizeAngleInput('gyaw');
+  state.hover = null;
   const input = gatherInput();
   state.invalidReasons = input.invalidReasons;
   const wasShortestOnly = state.shortestOnly;
@@ -1368,6 +1475,11 @@ function formatNumber(v){
   if (Math.abs(v) >= 100) return v.toFixed(1);
   if (Math.abs(v) >= 10) return v.toFixed(2);
   return v.toFixed(3);
+}
+
+function formatSigmaScaled(v){
+  if (!Number.isFinite(v)) return 'N/A';
+  return (v * 1000).toFixed(3);
 }
 
 function renderStats(){
@@ -1421,6 +1533,7 @@ function render(){
   }
 
   drawAxisGizmo();
+  drawHoverOverlay();
   renderStats();
 }
 
@@ -1467,6 +1580,21 @@ window.addEventListener('mousemove', (e) => {
   state.camera.cx -= dx / state.camera.scale;
   state.camera.cy += dy / state.camera.scale;
   state.lastMouse = { x: e.clientX, y: e.clientY };
+  render();
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (state.isDragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  updateHoverFromScreenPoint(px, py);
+  render();
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (!state.hover) return;
+  state.hover = null;
   render();
 });
 

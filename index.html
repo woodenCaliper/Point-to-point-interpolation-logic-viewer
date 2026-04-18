@@ -1196,6 +1196,9 @@ function refineCCDubins(s, g, R, sigmaMax, base){
   };
 
   const EPS = 0.5; // ヤコビアン数値微分のステップ [mm]
+  const POS_TOL = Math.max(0.2, R * 0.002); // 例: R=250mm -> 0.5mm
+  const YAW_TOL = deg2rad(0.2);
+  let converged = false;
 
   for(let iter = 0; iter < 20; iter++){
     const [ex, ey, eYaw] = evalEnd(L);
@@ -1203,7 +1206,10 @@ function refineCCDubins(s, g, R, sigmaMax, base){
     const dy   = g.y   - ey;
     const dYaw = angleWrap(g.yaw - eYaw);
 
-    if(Math.hypot(dx, dy) < 0.05 && Math.abs(dYaw) < 5e-4) break;
+    if(Math.hypot(dx, dy) <= POS_TOL && Math.abs(dYaw) <= YAW_TOL){
+      converged = true;
+      break;
+    }
 
     // 数値ヤコビアン J[出力行][入力列] = ∂output_i/∂L_j
     const J = [[0,0,0],[0,0,0],[0,0,0]];
@@ -1228,7 +1234,15 @@ function refineCCDubins(s, g, R, sigmaMax, base){
   }
 
   const fb = { segments: base.segments, rawSeg: L };
-  return sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb);
+  const sampled = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb);
+  const end = sampled.points[sampled.points.length - 1];
+  const posErr = end ? Math.hypot(end.x - g.x, end.y - g.y) : Infinity;
+  const yawErr = end ? Math.abs(angleWrap(end.yaw - g.yaw)) : Infinity;
+
+  if (!converged && !(posErr <= POS_TOL && yawErr <= YAW_TOL)) {
+    return null;
+  }
+  return sampled;
 }
 
 function generateCandidates(cfg){
@@ -1258,6 +1272,7 @@ function generateCandidates(cfg){
       list.push({ id:t, label:t, ...base });
     } else {
       const cc = refineCCDubins(cfg.start, cfg.goal, cfg.radius, cfg.sigmaMax, base);
+      if (!cc) continue;
       list.push({ id:`CC_${t}`, label:`CC-${t}`, ...cc });
     }
   }

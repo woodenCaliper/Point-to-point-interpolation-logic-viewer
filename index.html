@@ -1186,11 +1186,11 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
 // 高遷移率で終点がずれる。本関数はその補正を行う。
 // 収束失敗を避けるため、終点合わせにNewton等の反復解法は使わない。
 // まずCC軌跡を生成し、終点誤差が許容内なら採用。
-// 許容外の場合は終点一致が保証される基底Dubins軌跡へフォールバックする。
+// 許容外の場合は曲率連続な単一クロソイドへフォールバックする。
 function refineCCDubins(s, g, R, sigmaMax, base){
   // 反復法を使わず、まず参照弧長(base.rawSeg)でCC軌跡を1回生成する。
-  // これで終点誤差が許容内なら採用し、外れる場合は終点一致が保証される
-  // Dubins基底軌跡にフォールバックする（常に終点接続を優先）。
+  // これで終点誤差が許容内なら採用し、外れる場合は曲率連続な
+  // 単一クロソイドにフォールバックする（常に終点接続を優先）。
   const cc = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, base);
   const end = cc.points[cc.points.length - 1];
   const posErr = end ? Math.hypot(end.x - g.x, end.y - g.y) : Infinity;
@@ -1202,11 +1202,15 @@ function refineCCDubins(s, g, R, sigmaMax, base){
     return cc;
   }
 
-  // 参照実装寄りに「終点一致」を最優先し、非収束リスクのある反復補正は使わない。
-  // typeだけCC由来であることが分かるように注記を残す。
+  // CCが許容外の場合は、曲率が連続な単一クロソイドで終点接続する。
+  const sc = sampleSingleClothoidG1(
+    { x:s.x, y:s.y, yaw:s.yaw },
+    { x:g.x, y:g.y, yaw:g.yaw },
+    1
+  );
   return {
-    ...base,
-    type: `CC-FALLBACK-${base.type}`,
+    ...sc,
+    type: `CC-FALLBACK-SC`,
     fallbackReason: `cc_end_error pos=${posErr.toFixed(3)} yaw=${(yawErr*180/Math.PI).toFixed(3)}deg`,
   };
 }

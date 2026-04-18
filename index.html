@@ -338,6 +338,29 @@ function estimateSignedCurvature(points, idx){
   return Number.isFinite(k) ? k : 0;
 }
 
+function pointDistance(a, b){
+  return Math.hypot((b.x || 0) - (a.x || 0), (b.y || 0) - (a.y || 0));
+}
+
+function pointCurvature(points, idx){
+  const p = points?.[idx];
+  if (!p) return 0;
+  return Number.isFinite(p.k) ? p.k : estimateSignedCurvature(points, idx);
+}
+
+function estimateCurvatureRate(points, idx){
+  if (!points || points.length < 2 || idx < 0 || idx >= points.length) return 0;
+  const i0 = Math.max(0, idx - 1);
+  const i2 = Math.min(points.length - 1, idx + 1);
+  if (i0 === i2) return 0;
+  const k0 = pointCurvature(points, i0);
+  const k2 = pointCurvature(points, i2);
+  const ds = pointDistance(points[i0], points[i2]);
+  if (!Number.isFinite(ds) || ds < 1e-9) return 0;
+  const sigma = (k2 - k0) / ds;
+  return Number.isFinite(sigma) ? sigma : 0;
+}
+
 function updateHoverFromScreenPoint(px, py){
   state.hover = null;
   if (!state.result) return;
@@ -357,14 +380,14 @@ function updateHoverFromScreenPoint(px, py){
     }
   });
   if (!best) return;
-  const curv = Number.isFinite(best.p.k) ? best.p.k : estimateSignedCurvature(best.path.points, best.idx);
+  const sigma = estimateCurvatureRate(best.path.points, best.idx);
   state.hover = {
     sx: best.sx,
     sy: best.sy,
     x: best.p.x,
     y: best.p.y,
     thetaDeg: wrapDeg180(rad2deg(best.p.yaw || 0)),
-    curvature: curv,
+    curvatureRate: sigma,
   };
 }
 
@@ -425,7 +448,7 @@ function drawHoverOverlay(){
     `x: ${formatNumber(state.hover.x)} mm`,
     `y: ${formatNumber(state.hover.y)} mm`,
     `θ: ${formatNumber(state.hover.thetaDeg)} °`,
-    `曲率 k: ${formatCurvatureLikeInput(state.hover.curvature)} [1/mm]`,
+    `曲率変化率 σ: ${formatSigmaScaled(state.hover.curvatureRate)} [10^-3/mm²]`,
   ];
   ctx.save();
   ctx.font = '12px sans-serif';
@@ -1454,10 +1477,9 @@ function formatNumber(v){
   return v.toFixed(3);
 }
 
-function formatCurvatureLikeInput(v){
+function formatSigmaScaled(v){
   if (!Number.isFinite(v)) return 'N/A';
-  const snapped = Math.round(v / 0.05) * 0.05;
-  return snapped.toFixed(2);
+  return (v * 1000).toFixed(3);
 }
 
 function renderStats(){

@@ -1185,12 +1185,11 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
 // クロソイド幾何はDubins円弧と位置軌跡が異なるため、基底Dubins弧長をそのまま使うと
 // 高遷移率で終点がずれる。本関数はその補正を行う。
 // 収束失敗を避けるため、終点合わせにNewton等の反復解法は使わない。
-// まずCC軌跡を生成し、終点誤差が許容内なら採用。
-// 許容外の場合は曲率連続な単一クロソイドへフォールバックする。
+// まずCC軌跡を生成し、終点誤差が許容内なら採用する。
+// 許容外の場合は候補不成立として棄却する（他候補で最短比較）。
 function refineCCDubins(s, g, R, sigmaMax, base){
-  // 反復法を使わず、まず参照弧長(base.rawSeg)でCC軌跡を1回生成する。
-  // これで終点誤差が許容内なら採用し、外れる場合は曲率連続な
-  // 単一クロソイドにフォールバックする（常に終点接続を優先）。
+  // 反復法を使わず、参照弧長(base.rawSeg)でCC軌跡を1回生成する。
+  // 終点誤差が許容外なら null を返し、候補集合から除外する。
   const cc = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, base);
   const end = cc.points[cc.points.length - 1];
   const posErr = end ? Math.hypot(end.x - g.x, end.y - g.y) : Infinity;
@@ -1199,25 +1198,16 @@ function refineCCDubins(s, g, R, sigmaMax, base){
   const POS_TOL = Math.max(1.0, R * 0.02); // 例: R=250mm -> 5mm
   const YAW_TOL = deg2rad(1.0);
   if (posErr <= POS_TOL && yawErr <= YAW_TOL) {
+    cc.acceptance = { posErr, yawErr, posTol: POS_TOL, yawTol: YAW_TOL };
     return cc;
   }
-
-  // CCが許容外の場合は、曲率が連続な単一クロソイドで終点接続する。
-  const sc = sampleSingleClothoidG1(
-    { x:s.x, y:s.y, yaw:s.yaw },
-    { x:g.x, y:g.y, yaw:g.yaw },
-    1
-  );
-  return {
-    ...sc,
-    type: `CC-FALLBACK-SC`,
-    fallbackReason: `cc_end_error pos=${posErr.toFixed(3)} yaw=${(yawErr*180/Math.PI).toFixed(3)}deg`,
-  };
+  return null;
 }
 
 
 function generateCandidates(cfg){
   const list=[];
+  let ccRejected = 0;
   if (cfg.algorithm === 'linear') {
     const r = sampleLinear(cfg.start, cfg.goal, cfg.step);
     list.push({ id:'LINEAR', label:'LINEAR', ...r });
@@ -1243,13 +1233,16 @@ function generateCandidates(cfg){
       list.push({ id:t, label:t, ...base });
     } else {
       const cc = refineCCDubins(cfg.start, cfg.goal, cfg.radius, cfg.sigmaMax, base);
-      if (!cc) continue;
+      if (!cc) { ccRejected++; continue; }
       list.push({ id:`CC_${t}`, label:`CC-${t}`, ...cc });
     }
   }
 
   if (!list.length) {
-    list.push({ id:'1', label:'1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
+    const ccMsg = cfg.algorithm === 'cc_dubins'
+      ? `（CC候補不成立: ${ccRejected}件）`
+      : '';
+    list.push({ id:'1', label:`NO-PATH${ccMsg}`, points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
   }
   return list;
 }

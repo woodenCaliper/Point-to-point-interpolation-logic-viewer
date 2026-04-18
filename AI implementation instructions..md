@@ -20,6 +20,7 @@
 - CC-Dubins は厳密方式で実装する（近似実装は不可）。
 - 単一クロソイドG1補間は、始点・終点の位置と方位（G1）を満たす単一セグメントのクロソイドとして実装する。
 - CC-Dubins の参照ソースは Holger Banzhaf らの `steering_functions` とする。
+- CC-Dubins の入力は参照実装準拠とし、Path パラメータに `sigma_max`（最大曲率変化率, `1/mm²`）を用いる。
 - GitHub Pages で公開し、ブラウザのみで利用可能にする。
 
 ## UI実装方針（実装再開時に適用）

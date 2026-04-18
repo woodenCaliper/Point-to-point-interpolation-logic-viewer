@@ -1187,6 +1187,12 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
 // 注意: Newton法は局所反復のため、理論的に大域収束は保証されない。
 // そのため実装では multi-start + バックトラックで収束性を高め、
 // 収束しない場合は候補を破棄する。
+// ここでNewton法が解く未知数はセグメント長 L=[L0,L1,L2]。
+// 目標は F(L)=0 を満たすこと:
+//   F1(L)=x_end(L)-x_goal
+//   F2(L)=y_end(L)-y_goal
+//   F3(L)=wrap(yaw_end(L)-yaw_goal)
+// 3変数3方程式を数値ヤコビアン J=dF/dL で線形化して更新する。
 function refineCCDubins(s, g, R, sigmaMax, base){
   // 指定弧長でCCパスを積分し、終点の [x, y, yaw] を返す
   const evalEnd = (Lv) => {

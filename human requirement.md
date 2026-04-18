@@ -77,6 +77,7 @@
 - CC-Dubins 実装の参照ソースは、**Holger Banzhaf らの `steering_functions`** とする。
 - CC-Dubins の Path 入力は **`CC遷移率[%]` のみ**とする。
 - `sigma_max`（最大曲率変化率, 単位 `1/mm²`）は**参考値として表示のみ**行い、直接入力はさせない。
+- 参考表示の `sigma_max` は視認性のため **1000倍スケール**で表示し、単位は `10^-3/mm²` とする。
 
 ### GitHub Pages 公開ルール
 - GitHub Pages への公開方法は、できるだけ **GitHub公式かつ一般的な方法**に則る。

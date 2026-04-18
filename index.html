@@ -86,7 +86,7 @@
       <h2>Path</h2>
       <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" min="1" /></div>
       <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="25" min="0" max="100" /></div>
-      <div class="small only-curv" id="sigmaRef">参考 sigma_max: - [1/mm²]</div>
+      <div class="small only-curv" id="sigmaRef">参考 sigma_max: - [10^-3/mm²]</div>
     </div>
 
     <div class="row"><button id="randomBtn">ランダム</button></div>
@@ -214,17 +214,18 @@ function updateSigmaReference(){
   const refEl = $('sigmaRef');
   const trEl = $('ccTransition');
   if (!Number.isFinite(radius) || radius <= 0) {
-    refEl.textContent = '参考 sigma_max: - [1/mm²]';
+    refEl.textContent = '参考 sigma_max: - [10^-3/mm²]';
     return;
   }
   const trPercent = Number(trEl.value);
   if (!Number.isFinite(trPercent)) {
-    refEl.textContent = '参考 sigma_max: - [1/mm²]';
+    refEl.textContent = '参考 sigma_max: - [10^-3/mm²]';
     return;
   }
   const trRate = clampTransitionRate(trPercent / 100, radius);
   const sigma = transitionRateToSigma(trRate, radius);
-  refEl.textContent = `参考 sigma_max: ${sigma.toFixed(6)} [1/mm²]`;
+  const sigmaScaled = sigma * 1000;
+  refEl.textContent = `参考 sigma_max: ${sigmaScaled.toFixed(3)} [10^-3/mm²]`;
 }
 
 function clampInputToLimits(id) {

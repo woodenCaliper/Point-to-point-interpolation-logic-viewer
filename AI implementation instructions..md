@@ -22,6 +22,7 @@
 - CC-Dubins の参照ソースは Holger Banzhaf らの `steering_functions` とする。
 - CC-Dubins の UI入力は `CC遷移率[%]` のみとする。
 - `sigma_max`（最大曲率変化率, `1/mm²`）は `CC遷移率[%]` と `R` から内部換算し、UIには参考値テキストとして表示する。
+- 参考表示の `sigma_max` は視認性向上のため 1000 倍した値を表示し、単位表記を `10^-3/mm²` にする。
 - GitHub Pages で公開し、ブラウザのみで利用可能にする。
 
 ## UI実装方針（実装再開時に適用）

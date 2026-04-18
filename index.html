@@ -1284,12 +1284,26 @@ function evaluatePathIntegrity(candidate, start, goal, endTol=1e-6){
   return { startError, endError, maxStep, connected };
 }
 
+function isPathEligibleForShortest(path){
+  if (!path) return false;
+  if (!Number.isFinite(path.totalLength)) return false;
+  if (!path.integrity) return true;
+  return !!path.integrity.connected;
+}
+
 function computeShortestIndex(paths){
-  let bestIdx = 0;
-  for (let i=1;i<paths.length;i++) {
-    if (paths[i].totalLength < paths[bestIdx].totalLength) bestIdx = i;
+  let bestIdx = -1;
+  for (let i=0;i<paths.length;i++) {
+    if (!isPathEligibleForShortest(paths[i])) continue;
+    if (bestIdx < 0 || paths[i].totalLength < paths[bestIdx].totalLength) bestIdx = i;
   }
-  return bestIdx;
+  if (bestIdx >= 0) return bestIdx;
+
+  for (let i=0;i<paths.length;i++) {
+    if (!Number.isFinite(paths[i]?.totalLength)) continue;
+    if (bestIdx < 0 || paths[i].totalLength < paths[bestIdx].totalLength) bestIdx = i;
+  }
+  return bestIdx >= 0 ? bestIdx : 0;
 }
 
 function buildPathListUI(){

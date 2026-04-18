@@ -85,7 +85,8 @@
     <div class="group">
       <h2>Path</h2>
       <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" min="1" /></div>
-      <div class="control only-curv"><label>sigma_max <span class="unit">[1/mm²]</span></label><input id="sigmaMax" type="number" step="0.001" value="0.028" min="0" /></div>
+      <div class="control only-curv"><label>sigma_max <span class="unit">[1/mm²]</span></label><input id="sigmaMax" type="number" step="0.000001" value="0.028000" min="0" /></div>
+      <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="0.1" value="25" min="0" max="100" /></div>
     </div>
 
     <div class="row"><button id="randomBtn">ランダム</button></div>
@@ -132,6 +133,7 @@ const state = {
   invalidReasons: [],
   shortestOnly: false,
   beforeShortestVisible: [],
+  lastCCInputSource: 'sigmaMax',
   isDragging: false,
   lastMouse: { x: 0, y: 0 },
 };
@@ -191,7 +193,54 @@ function updateInputVisibility(){
 const INPUT_LIMITS = {
   radius:       { min: 1 },
   sigmaMax:     { min: 0 },
+  ccTransition: { min: 0, max: 100 },
 };
+
+const CC_PARAM_EPS = 1e-12;
+const MAX_TRANSITION_RATE = 1.0; // 100%
+
+function transitionRateFloor(radius){
+  return Math.min(MAX_TRANSITION_RATE, 3 / Math.max(radius, CC_PARAM_EPS));
+}
+
+function transitionRateToSigma(rate, radius){
+  return 1 / (radius * radius * Math.max(rate, CC_PARAM_EPS));
+}
+
+function sigmaToTransitionRate(sigma, radius){
+  return sigma > CC_PARAM_EPS
+    ? 1 / (radius * radius * sigma)
+    : MAX_TRANSITION_RATE;
+}
+
+function clampTransitionRate(rate, radius){
+  const floor = transitionRateFloor(radius);
+  return clamp(rate, floor, MAX_TRANSITION_RATE);
+}
+
+function syncCCParameterInputs(source = state.lastCCInputSource){
+  const radius = Number($('radius').value);
+  if (!Number.isFinite(radius) || radius <= 0) return;
+
+  const sigmaEl = $('sigmaMax');
+  const trEl = $('ccTransition');
+  let sigma = Number(sigmaEl.value);
+  let trRate = Number(trEl.value) / 100;
+
+  if (source === 'ccTransition') {
+    if (!Number.isFinite(trRate)) return;
+    trRate = clampTransitionRate(trRate, radius);
+    sigma = transitionRateToSigma(trRate, radius);
+  } else {
+    if (!Number.isFinite(sigma)) return;
+    sigma = Math.max(0, sigma);
+    trRate = clampTransitionRate(sigmaToTransitionRate(sigma, radius), radius);
+    sigma = transitionRateToSigma(trRate, radius);
+  }
+
+  sigmaEl.value = sigma.toFixed(6);
+  trEl.value = (trRate * 100).toFixed(1);
+}
 
 function clampInputToLimits(id) {
   const limits = INPUT_LIMITS[id];
@@ -229,7 +278,7 @@ function gatherInput(){
   const sx = parseField('sx'); const sy = parseField('sy');
   const gx = parseField('gx'); const gy = parseField('gy');
 
-  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, sigmaMax = 0.028;
+  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, sigmaMax = 0.028, ccTransition = 25;
 
   if (algorithm !== 'linear') {
     syaw = parseField('syaw'); gyaw = parseField('gyaw');
@@ -240,13 +289,14 @@ function gatherInput(){
   if (algorithm === 'cc_dubins') {
     sk = parseField('sk', null, { integerOnly: false, step: 0.05 });
     gk = parseField('gk', null, { integerOnly: false, step: 0.05 });
-    sigmaMax = parseField('sigmaMax', v => v >= 0, { integerOnly: false, step: 0.001 });
+    sigmaMax = parseField('sigmaMax', v => v >= 0, { integerOnly: false, step: 0.000001 });
+    ccTransition = parseField('ccTransition', v => v >= 0 && v <= 100, { integerOnly: false, step: 0.1 });
   }
 
   const required = { sx, sy, gx, gy };
   if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw });
   if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') Object.assign(required, { radius });
-  if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, sigmaMax });
+  if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, sigmaMax, ccTransition });
 
   for (const [k,v] of Object.entries(required)) {
     if (!isFiniteNum(v)) invalidReasons.push(`入力エラー: ${k}`);
@@ -259,6 +309,7 @@ function gatherInput(){
     radius,
     step: 1,
     sigmaMax,
+    ccTransition: (ccTransition || 0) / 100,
     showPoints: $('showPoints').checked,
     showCurvature: $('showCurvature').checked,
   };
@@ -1278,6 +1329,7 @@ function applyShortestOnlyToggle(){
 
 function recalculate(){
   updateInputVisibility();
+  syncCCParameterInputs(state.lastCCInputSource);
   normalizeAngleInput('syaw');
   normalizeAngleInput('gyaw');
   const input = gatherInput();
@@ -1430,11 +1482,26 @@ window.addEventListener('mousemove', (e) => {
   render();
 });
 
-['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','sigmaMax','showPoints','showCurvature']
+['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','showPoints','showCurvature']
   .forEach(id => {
     $(id).addEventListener('input',  () => { clampInputToLimits(id); recalculate(); });
     $(id).addEventListener('change', () => { clampInputToLimits(id); recalculate(); });
   });
+
+['radius','sigmaMax','ccTransition'].forEach(id => {
+  $(id).addEventListener('input', () => {
+    clampInputToLimits(id);
+    state.lastCCInputSource = (id === 'ccTransition') ? 'ccTransition' : 'sigmaMax';
+    syncCCParameterInputs(state.lastCCInputSource);
+    recalculate();
+  });
+  $(id).addEventListener('change', () => {
+    clampInputToLimits(id);
+    state.lastCCInputSource = (id === 'ccTransition') ? 'ccTransition' : 'sigmaMax';
+    syncCCParameterInputs(state.lastCCInputSource);
+    recalculate();
+  });
+});
 
 $('randomBtn').addEventListener('click', ()=>{
   const r=(a,b)=> String(Math.round(Math.random()*(b-a)+a));
@@ -1444,7 +1511,9 @@ $('randomBtn').addEventListener('click', ()=>{
   $('sk').value=r(-1,1);
   $('gk').value=r(-1,1);
   $('radius').value=r(50,400);
-  $('sigmaMax').value=(Math.round((Math.random() * 0.08) * 1000) / 1000).toFixed(3);
+  $('sigmaMax').value=(Math.round((Math.random() * 0.08) * 1000000) / 1000000).toFixed(6);
+  state.lastCCInputSource = 'sigmaMax';
+  syncCCParameterInputs('sigmaMax');
   state.camera.initialized = false;
   recalculate();
 });

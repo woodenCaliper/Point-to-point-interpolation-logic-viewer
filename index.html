@@ -86,6 +86,7 @@
       <h2>Path</h2>
       <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" min="1" /></div>
       <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="25" min="0" max="100" /></div>
+      <div class="small only-curv" id="sigmaRef">参考 sigma_max: - [10^-3/mm²]</div>
     </div>
 
     <div class="row"><button id="randomBtn">ランダム</button></div>
@@ -193,6 +194,40 @@ const INPUT_LIMITS = {
   ccTransition: { min: 0, max: 100 },
 };
 
+const CC_PARAM_EPS = 1e-12;
+
+function transitionRateFloor(radius){
+  return Math.min(1.0, 3 / Math.max(radius, CC_PARAM_EPS));
+}
+
+function transitionRateToSigma(rate, radius){
+  return 1 / (radius * radius * Math.max(rate, CC_PARAM_EPS));
+}
+
+function clampTransitionRate(rate, radius){
+  const floor = transitionRateFloor(radius);
+  return clamp(rate, floor, 1.0);
+}
+
+function updateSigmaReference(){
+  const radius = Number($('radius').value);
+  const refEl = $('sigmaRef');
+  const trEl = $('ccTransition');
+  if (!Number.isFinite(radius) || radius <= 0) {
+    refEl.textContent = '参考 sigma_max: - [10^-3/mm²]';
+    return;
+  }
+  const trPercent = Number(trEl.value);
+  if (!Number.isFinite(trPercent)) {
+    refEl.textContent = '参考 sigma_max: - [10^-3/mm²]';
+    return;
+  }
+  const trRate = clampTransitionRate(trPercent / 100, radius);
+  const sigma = transitionRateToSigma(trRate, radius);
+  const sigmaScaled = sigma * 1000;
+  refEl.textContent = `参考 sigma_max: ${sigmaScaled.toFixed(3)} [10^-3/mm²]`;
+}
+
 function clampInputToLimits(id) {
   const limits = INPUT_LIMITS[id];
   if (!limits) return;
@@ -229,7 +264,7 @@ function gatherInput(){
   const sx = parseField('sx'); const sy = parseField('sy');
   const gx = parseField('gx'); const gy = parseField('gy');
 
-  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, ccTransition = 0.25;
+  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, ccTransition = 25;
 
   if (algorithm !== 'linear') {
     syaw = parseField('syaw'); gyaw = parseField('gyaw');
@@ -248,6 +283,9 @@ function gatherInput(){
   if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') Object.assign(required, { radius });
   if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
 
+  const effectiveTransitionRate = clampTransitionRate((ccTransition || 0) / 100, radius || 1);
+  const sigmaMax = transitionRateToSigma(effectiveTransitionRate, radius || 1);
+
   for (const [k,v] of Object.entries(required)) {
     if (!isFiniteNum(v)) invalidReasons.push(`入力エラー: ${k}`);
   }
@@ -258,7 +296,8 @@ function gatherInput(){
     goal: { x: gx, y: gy, yaw: deg2rad(gyaw || 0), k: gk || 0 },
     radius,
     step: 1,
-    ccTransition: (ccTransition || 0) / 100,
+    sigmaMax,
+    ccTransition: effectiveTransitionRate,
     showPoints: $('showPoints').checked,
     showCurvature: $('showCurvature').checked,
   };
@@ -993,10 +1032,12 @@ function sampleSingleClothoidG1(s, g, step){
   };
 }
 
-function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
+function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
   const samplingStep = 1;
   const target = 1/R;
-  const transition = Math.max(samplingStep*3, R*trRate);
+  const transition = sigmaMax > 1e-12
+    ? Math.max(samplingStep*3, target / sigmaMax)
+    : Number.POSITIVE_INFINITY;
 
   // 境界曲率を最大曲率にクランプ（|k| <= target = 1/R）
   const ks = clamp(s.k||0, -target, target);
@@ -1109,13 +1150,13 @@ function sampleCCDubinsFromBase(s,g,R,step,trRate,base){
 // CC-Dubinsパスの終点が目標点に一致するよう、Newton法でセグメント弧長を修正する。
 // クロソイド幾何はDubins円弧と位置軌跡が異なるため、基底Dubins弧長をそのまま使うと
 // 高遷移率で終点がずれる。本関数はその補正を行う。
-function refineCCDubins(s, g, R, trRate, base){
+function refineCCDubins(s, g, R, sigmaMax, base){
   let L = base.rawSeg.slice(); // 現在のセグメント弧長 [L0, L1, L2] (mm)
 
   // 指定弧長でCCパスを積分し、終点の [x, y, yaw] を返す
   const evalEnd = (Lv) => {
     const fb = { segments: base.segments, rawSeg: Lv };
-    const pts = sampleCCDubinsFromBase(s, g, R, 1, trRate, fb).points;
+    const pts = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb).points;
     const p = pts[pts.length - 1];
     return [p.x, p.y, p.yaw];
   };
@@ -1153,7 +1194,7 @@ function refineCCDubins(s, g, R, trRate, base){
   }
 
   const fb = { segments: base.segments, rawSeg: L };
-  return sampleCCDubinsFromBase(s, g, R, 1, trRate, fb);
+  return sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb);
 }
 
 function generateCandidates(cfg){
@@ -1182,7 +1223,7 @@ function generateCandidates(cfg){
     if (cfg.algorithm === 'dubins') {
       list.push({ id:t, label:t, ...base });
     } else {
-      const cc = refineCCDubins(cfg.start, cfg.goal, cfg.radius, cfg.ccTransition, base);
+      const cc = refineCCDubins(cfg.start, cfg.goal, cfg.radius, cfg.sigmaMax, base);
       list.push({ id:`CC_${t}`, label:`CC-${t}`, ...cc });
     }
   }
@@ -1276,6 +1317,7 @@ function applyShortestOnlyToggle(){
 
 function recalculate(){
   updateInputVisibility();
+  updateSigmaReference();
   normalizeAngleInput('syaw');
   normalizeAngleInput('gyaw');
   const input = gatherInput();
@@ -1428,11 +1470,22 @@ window.addEventListener('mousemove', (e) => {
   render();
 });
 
-['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','radius','ccTransition','showPoints','showCurvature']
+['algorithm','sx','sy','syaw','sk','gx','gy','gyaw','gk','showPoints','showCurvature']
   .forEach(id => {
     $(id).addEventListener('input',  () => { clampInputToLimits(id); recalculate(); });
     $(id).addEventListener('change', () => { clampInputToLimits(id); recalculate(); });
   });
+
+['radius','ccTransition'].forEach(id => {
+  $(id).addEventListener('input', () => {
+    clampInputToLimits(id);
+    recalculate();
+  });
+  $(id).addEventListener('change', () => {
+    clampInputToLimits(id);
+    recalculate();
+  });
+});
 
 $('randomBtn').addEventListener('click', ()=>{
   const r=(a,b)=> String(Math.round(Math.random()*(b-a)+a));

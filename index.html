@@ -1181,98 +1181,36 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
   return { points:pts, totalLength:len, segments:base.segments, type:`CC-${base.type}`, rawSeg:base.rawSeg.slice() };
 }
 
-// CC-Dubinsパスの終点が目標点に一致するよう、Newton法でセグメント弧長を修正する。
+// CC-Dubinsパスの終点一致を担保するための補正処理。
 // クロソイド幾何はDubins円弧と位置軌跡が異なるため、基底Dubins弧長をそのまま使うと
 // 高遷移率で終点がずれる。本関数はその補正を行う。
-// 注意: Newton法は局所反復のため、理論的に大域収束は保証されない。
-// そのため実装では multi-start + バックトラックで収束性を高め、
-// 収束しない場合は候補を破棄する。
-// ここでNewton法が解く未知数はセグメント長 L=[L0,L1,L2]。
-// 目標は F(L)=0 を満たすこと:
-//   F1(L)=x_end(L)-x_goal
-//   F2(L)=y_end(L)-y_goal
-//   F3(L)=wrap(yaw_end(L)-yaw_goal)
-// 3変数3方程式を数値ヤコビアン J=dF/dL で線形化して更新する。
+// 収束失敗を避けるため、終点合わせにNewton等の反復解法は使わない。
+// まずCC軌跡を生成し、終点誤差が許容内なら採用。
+// 許容外の場合は終点一致が保証される基底Dubins軌跡へフォールバックする。
 function refineCCDubins(s, g, R, sigmaMax, base){
-  // 指定弧長でCCパスを積分し、終点の [x, y, yaw] を返す
-  const evalEnd = (Lv) => {
-    const fb = { segments: base.segments, rawSeg: Lv };
-    const pts = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb).points;
-    const p = pts[pts.length - 1];
-    return [p.x, p.y, p.yaw];
-  };
+  // 反復法を使わず、まず参照弧長(base.rawSeg)でCC軌跡を1回生成する。
+  // これで終点誤差が許容内なら採用し、外れる場合は終点一致が保証される
+  // Dubins基底軌跡にフォールバックする（常に終点接続を優先）。
+  const cc = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, base);
+  const end = cc.points[cc.points.length - 1];
+  const posErr = end ? Math.hypot(end.x - g.x, end.y - g.y) : Infinity;
+  const yawErr = end ? Math.abs(angleWrap(end.yaw - g.yaw)) : Infinity;
 
-  const EPS = 0.5; // ヤコビアン数値微分のステップ [mm]
-  const POS_TOL = Math.max(0.2, R * 0.002); // 例: R=250mm -> 0.5mm
-  const YAW_TOL = deg2rad(0.2);
-  const residual = (Lv) => {
-    const [ex, ey, eYaw] = evalEnd(Lv);
-    const dx = g.x - ex;
-    const dy = g.y - ey;
-    const dYaw = angleWrap(g.yaw - eYaw);
-    return { dx, dy, dYaw, posErr: Math.hypot(dx, dy), yawErr: Math.abs(dYaw) };
-  };
-
-  const initial = base.rawSeg.slice();
-  const seeds = [
-    initial,
-    [initial[0] * 0.9, initial[1] * 1.2, initial[2] * 0.9],
-    [initial[0] * 1.2, initial[1] * 0.9, initial[2] * 1.2],
-    [initial[0] + R * 0.25, initial[1], initial[2] + R * 0.25],
-  ].map(v => v.map(x => Math.max(1e-3, x)));
-
-  let best = null;
-  for (const seed of seeds){
-    let L = seed.slice();
-    for(let iter = 0; iter < 25; iter++){
-      const cur = residual(L);
-      const isConv = cur.posErr <= POS_TOL && cur.yawErr <= YAW_TOL;
-      const score = cur.posErr + R * cur.yawErr;
-      if (!best
-        || (isConv && !best.converged)
-        || (isConv === best.converged && score < best.score)) {
-        best = { L: L.slice(), score, converged: isConv };
-      }
-      if (isConv) break;
-
-      // 数値ヤコビアン J[出力行][入力列] = ∂output_i/∂L_j
-      const [ex, ey, eYaw] = evalEnd(L);
-      const J = [[0,0,0],[0,0,0],[0,0,0]];
-      for(let j = 0; j < 3; j++){
-        const Lp = L.slice(); Lp[j] += EPS;
-        const [px, py, pYaw] = evalEnd(Lp);
-        J[0][j] = (px - ex) / EPS;
-        J[1][j] = (py - ey) / EPS;
-        J[2][j] = angleWrap(pYaw - eYaw) / EPS;
-      }
-
-      const delta = solve3x3(J, [cur.dx, cur.dy, cur.dYaw]);
-      if(!delta) break;
-
-      const norm = Math.sqrt(delta[0]**2 + delta[1]**2 + delta[2]**2);
-      const scale = norm > 30 ? 30 / norm : 1.0;
-
-      // バックトラックで残差が減る更新のみ採用
-      let accepted = false;
-      const curScore = cur.posErr + R * cur.yawErr;
-      for (const alpha of [1.0, 0.5, 0.25, 0.1]) {
-        const trial = L.map((v, j) => Math.max(1e-3, v + scale * alpha * delta[j]));
-        const tr = residual(trial);
-        const trScore = tr.posErr + R * tr.yawErr;
-        if (trScore < curScore) {
-          L = trial;
-          accepted = true;
-          break;
-        }
-      }
-      if (!accepted) break;
-    }
+  const POS_TOL = Math.max(1.0, R * 0.02); // 例: R=250mm -> 5mm
+  const YAW_TOL = deg2rad(1.0);
+  if (posErr <= POS_TOL && yawErr <= YAW_TOL) {
+    return cc;
   }
 
-  if (!best || !best.converged) return null;
-  const fb = { segments: base.segments, rawSeg: best.L };
-  return sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb);
+  // 参照実装寄りに「終点一致」を最優先し、非収束リスクのある反復補正は使わない。
+  // typeだけCC由来であることが分かるように注記を残す。
+  return {
+    ...base,
+    type: `CC-FALLBACK-${base.type}`,
+    fallbackReason: `cc_end_error pos=${posErr.toFixed(3)} yaw=${(yawErr*180/Math.PI).toFixed(3)}deg`,
+  };
 }
+
 
 function generateCandidates(cfg){
   const list=[];

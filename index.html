@@ -85,8 +85,8 @@
     <div class="group">
       <h2>Path</h2>
       <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="12" min="1" /></div>
-      <div class="control only-curv"><label>sigma_max <span class="unit">[1/mm²]</span></label><input id="sigmaMax" type="number" step="0.001" value="0.028000" min="0" max="0.1" /></div>
       <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="25" min="0" max="100" /></div>
+      <div class="small only-curv" id="sigmaRef">参考 sigma_max: - [1/mm²]</div>
     </div>
 
     <div class="row"><button id="randomBtn">ランダム</button></div>
@@ -133,7 +133,6 @@ const state = {
   invalidReasons: [],
   shortestOnly: false,
   beforeShortestVisible: [],
-  lastCCInputSource: 'sigmaMax',
   isDragging: false,
   lastMouse: { x: 0, y: 0 },
 };
@@ -192,80 +191,40 @@ function updateInputVisibility(){
 
 const INPUT_LIMITS = {
   radius:       { min: 1 },
-  sigmaMax:     { min: 0, max: 0.1 },
   ccTransition: { min: 0, max: 100 },
 };
 
 const CC_PARAM_EPS = 1e-12;
-const MAX_TRANSITION_RATE = 1.0; // 100%
-const TRANSITION_PERCENT_STEP = 1; // [%]
-const SIGMA_STEP_RATIO = 0.01; // 上下限レンジの1%
-
-function formatStep(v, digits = 6){
-  return Number(v).toFixed(digits).replace(/\.?0+$/,'') || '0';
-}
-
-function getSigmaSpinStep(){
-  const limits = INPUT_LIMITS.sigmaMax;
-  return Math.max(CC_PARAM_EPS, (limits.max - limits.min) * SIGMA_STEP_RATIO);
-}
-
-function applySigmaSpinSettings(){
-  const sigmaEl = $('sigmaMax');
-  const limits = INPUT_LIMITS.sigmaMax;
-  sigmaEl.min = String(limits.min);
-  sigmaEl.max = String(limits.max);
-  sigmaEl.step = formatStep(getSigmaSpinStep());
-}
 
 function transitionRateFloor(radius){
-  return Math.min(MAX_TRANSITION_RATE, 3 / Math.max(radius, CC_PARAM_EPS));
+  return Math.min(1.0, 3 / Math.max(radius, CC_PARAM_EPS));
 }
 
 function transitionRateToSigma(rate, radius){
   return 1 / (radius * radius * Math.max(rate, CC_PARAM_EPS));
 }
 
-function sigmaToTransitionRate(sigma, radius){
-  return sigma > CC_PARAM_EPS
-    ? 1 / (radius * radius * sigma)
-    : MAX_TRANSITION_RATE;
-}
-
 function clampTransitionRate(rate, radius){
   const floor = transitionRateFloor(radius);
-  return clamp(rate, floor, MAX_TRANSITION_RATE);
+  return clamp(rate, floor, 1.0);
 }
 
-function syncCCParameterInputs(source = state.lastCCInputSource){
+function updateSigmaReference(){
   const radius = Number($('radius').value);
-  if (!Number.isFinite(radius) || radius <= 0) return;
-
-  const sigmaEl = $('sigmaMax');
+  const refEl = $('sigmaRef');
   const trEl = $('ccTransition');
-  let sigma = Number(sigmaEl.value);
-  let trRate = Number(trEl.value) / 100;
-
-  if (source === 'ccTransition') {
-    if (!Number.isFinite(trRate)) return;
-    trRate = clampTransitionRate(trRate, radius);
-    sigma = transitionRateToSigma(trRate, radius);
-  } else {
-    if (!Number.isFinite(sigma)) return;
-    sigma = Math.max(0, sigma);
-    trRate = clampTransitionRate(sigmaToTransitionRate(sigma, radius), radius);
-    sigma = transitionRateToSigma(trRate, radius);
+  if (!Number.isFinite(radius) || radius <= 0) {
+    refEl.textContent = '参考 sigma_max: - [1/mm²]';
+    return;
   }
-
-  const minPercent = transitionRateFloor(radius) * 100;
-  const minStepPercent = Math.ceil(minPercent / TRANSITION_PERCENT_STEP) * TRANSITION_PERCENT_STEP;
-  const clampedPercent = clamp(trRate * 100, minStepPercent, 100);
-  const quantizedPercent = Math.round(clampedPercent / TRANSITION_PERCENT_STEP) * TRANSITION_PERCENT_STEP;
-  trRate = clamp(quantizedPercent, minStepPercent, 100) / 100;
-  sigma = transitionRateToSigma(trRate, radius);
-
-  sigmaEl.value = sigma.toFixed(6);
-  trEl.value = String(Math.round(trRate * 100));
+  const trPercent = Number(trEl.value);
+  if (!Number.isFinite(trPercent)) {
+    refEl.textContent = '参考 sigma_max: - [1/mm²]';
+    return;
+  }
+  const trRate = clampTransitionRate(trPercent / 100, radius);
+  const sigma = transitionRateToSigma(trRate, radius);
+  refEl.textContent = `参考 sigma_max: ${sigma.toFixed(6)} [1/mm²]`;
 }
 
 function clampInputToLimits(id) {
@@ -304,7 +263,7 @@ function gatherInput(){
   const sx = parseField('sx'); const sy = parseField('sy');
   const gx = parseField('gx'); const gy = parseField('gy');
 
-  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, sigmaMax = 0.028, ccTransition = 25;
+  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, ccTransition = 25;
 
   if (algorithm !== 'linear') {
     syaw = parseField('syaw'); gyaw = parseField('gyaw');
@@ -315,14 +274,16 @@ function gatherInput(){
   if (algorithm === 'cc_dubins') {
     sk = parseField('sk', null, { integerOnly: false, step: 0.05 });
     gk = parseField('gk', null, { integerOnly: false, step: 0.05 });
-    sigmaMax = parseField('sigmaMax', v => v >= 0, { integerOnly: false, step: 0.000001 });
     ccTransition = parseField('ccTransition', v => v >= 0 && v <= 100);
   }
 
   const required = { sx, sy, gx, gy };
   if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw });
   if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') Object.assign(required, { radius });
-  if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, sigmaMax, ccTransition });
+  if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
+
+  const effectiveTransitionRate = clampTransitionRate((ccTransition || 0) / 100, radius || 1);
+  const sigmaMax = transitionRateToSigma(effectiveTransitionRate, radius || 1);
 
   for (const [k,v] of Object.entries(required)) {
     if (!isFiniteNum(v)) invalidReasons.push(`入力エラー: ${k}`);
@@ -335,7 +296,7 @@ function gatherInput(){
     radius,
     step: 1,
     sigmaMax,
-    ccTransition: (ccTransition || 0) / 100,
+    ccTransition: effectiveTransitionRate,
     showPoints: $('showPoints').checked,
     showCurvature: $('showCurvature').checked,
   };
@@ -1355,7 +1316,7 @@ function applyShortestOnlyToggle(){
 
 function recalculate(){
   updateInputVisibility();
-  syncCCParameterInputs(state.lastCCInputSource);
+  updateSigmaReference();
   normalizeAngleInput('syaw');
   normalizeAngleInput('gyaw');
   const input = gatherInput();
@@ -1514,42 +1475,16 @@ window.addEventListener('mousemove', (e) => {
     $(id).addEventListener('change', () => { clampInputToLimits(id); recalculate(); });
   });
 
-function commitCCInputs(source){
-  clampInputToLimits(source);
-  state.lastCCInputSource = source;
-  syncCCParameterInputs(state.lastCCInputSource);
-  recalculate();
-}
-
-['radius'].forEach(id => {
+['radius','ccTransition'].forEach(id => {
   $(id).addEventListener('input', () => {
     clampInputToLimits(id);
-    state.lastCCInputSource = 'sigmaMax';
-    syncCCParameterInputs(state.lastCCInputSource);
     recalculate();
   });
   $(id).addEventListener('change', () => {
     clampInputToLimits(id);
-    state.lastCCInputSource = 'sigmaMax';
-    syncCCParameterInputs(state.lastCCInputSource);
     recalculate();
   });
 });
-
-['sigmaMax','ccTransition'].forEach(id => {
-  $(id).addEventListener('input', () => {
-    state.lastCCInputSource = id;
-  });
-  $(id).addEventListener('change', () => commitCCInputs(id));
-  $(id).addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    commitCCInputs(id);
-    $(id).blur();
-  });
-});
-
-applySigmaSpinSettings();
 
 $('randomBtn').addEventListener('click', ()=>{
   const r=(a,b)=> String(Math.round(Math.random()*(b-a)+a));
@@ -1559,11 +1494,7 @@ $('randomBtn').addEventListener('click', ()=>{
   $('sk').value=r(-1,1);
   $('gk').value=r(-1,1);
   $('radius').value=r(50,400);
-  const sigmaMin = INPUT_LIMITS.sigmaMax.min;
-  const sigmaMaxLimit = INPUT_LIMITS.sigmaMax.max;
-  $('sigmaMax').value=(Math.round((Math.random() * (sigmaMaxLimit - sigmaMin) + sigmaMin) * 1000000) / 1000000).toFixed(6);
-  state.lastCCInputSource = 'sigmaMax';
-  syncCCParameterInputs('sigmaMax');
+  $('ccTransition').value=r(0,100);
   state.camera.initialized = false;
   recalculate();
 });

@@ -75,9 +75,8 @@
 ### CC-Dubins
 - CC-Dubins は「比較用の近似」ではなく、**実装方式まで厳密に定義したもの**を採用する。
 - CC-Dubins 実装の参照ソースは、**Holger Banzhaf らの `steering_functions`** とする。
-- CC-Dubins の Path 入力には、参照実装に合わせて **`sigma_max`（最大曲率変化率, 単位 `1/mm²`）** を使う。
-- Path 入力には `sigma_max` と `CC遷移率[%]` を併設し、どちらかを変更するともう一方も自動同期する。
-- 飽和領域では `CC遷移率[%]` 側も境界値で頭打ち（クランプ）する。
+- CC-Dubins の Path 入力は **`CC遷移率[%]` のみ**とする。
+- `sigma_max`（最大曲率変化率, 単位 `1/mm²`）は**参考値として表示のみ**行い、直接入力はさせない。
 
 ### GitHub Pages 公開ルール
 - GitHub Pages への公開方法は、できるだけ **GitHub公式かつ一般的な方法**に則る。

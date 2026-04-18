@@ -357,7 +357,7 @@ function updateHoverFromScreenPoint(px, py){
     }
   });
   if (!best) return;
-  const curv = estimateSignedCurvature(best.path.points, best.idx);
+  const curv = Number.isFinite(best.p.k) ? best.p.k : estimateSignedCurvature(best.path.points, best.idx);
   state.hover = {
     sx: best.sx,
     sy: best.sy,
@@ -425,7 +425,7 @@ function drawHoverOverlay(){
     `x: ${formatNumber(state.hover.x)} mm`,
     `y: ${formatNumber(state.hover.y)} mm`,
     `θ: ${formatNumber(state.hover.thetaDeg)} °`,
-    `曲率 k: ${formatNumber(state.hover.curvature)} 1/mm`,
+    `曲率 k: ${formatCurvatureLikeInput(state.hover.curvature)} [1/mm]`,
   ];
   ctx.save();
   ctx.font = '12px sans-serif';
@@ -1126,7 +1126,7 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
   const ks = clamp(s.k||0, -target, target);
   const kg = clamp(g.k||0, -target, target);
 
-  const pts = [{x:s.x, y:s.y, yaw:s.yaw}];
+  const pts = [{x:s.x, y:s.y, yaw:s.yaw, k:ks}];
   const st = {x:s.x, y:s.y, yaw:s.yaw, k:ks};
 
   // Banzhaf系実装に合わせ、クロソイド区間は台形積分ではなく
@@ -1155,7 +1155,7 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
 
     st.yaw = mod2pi(st.yaw + k*ds + 0.5*sigma*ds2);
     st.k += sigma * ds;
-    pts.push({x:st.x, y:st.y, yaw:st.yaw});
+    pts.push({x:st.x, y:st.y, yaw:st.yaw, k:st.k});
   };
 
   const segs = base.segments;
@@ -1452,6 +1452,12 @@ function formatNumber(v){
   if (Math.abs(v) >= 100) return v.toFixed(1);
   if (Math.abs(v) >= 10) return v.toFixed(2);
   return v.toFixed(3);
+}
+
+function formatCurvatureLikeInput(v){
+  if (!Number.isFinite(v)) return 'N/A';
+  const snapped = Math.round(v / 0.05) * 0.05;
+  return snapped.toFixed(2);
 }
 
 function renderStats(){

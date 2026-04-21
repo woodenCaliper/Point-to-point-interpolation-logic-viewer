@@ -170,6 +170,7 @@ function solve3x3(A, b){
   }
   return x;
 }
+
 function isFiniteNum(v){ return Number.isFinite(v); }
 function wrapDeg180(v){
   let d = ((v + 180) % 360 + 360) % 360 - 180;
@@ -1119,59 +1120,84 @@ function sampleThreeClothoidG2(cfg){
     return { points:[{x:s.x,y:s.y,yaw:s.yaw,k:s.k}], totalLength:0, segments:['CLOTHOID','CLOTHOID','CLOTHOID'], type:'TC-G2', rawSeg:[0,0,0] };
   }
 
-  const yawDelta = angleWrap(g.yaw - s.yaw);
-  const kBound = Math.max(0.03, 2 / Math.max(1, chord));
+  // 実装安定性を優先し、境界G2条件を満たす5次エルミート曲線を生成し、
+  // それを3区間に分けて「3連」パスとして扱う。
+  const vScale = Math.max(30, chord * 1.1);
+  const ax0 = 0;
+  const ay0 = 0;
+  const ax1 = 0;
+  const ay1 = 0;
 
-  let L = Math.max(5, chord / 3);
-  let k1 = clamp((2 * yawDelta / L - s.k - g.k) / 4, -kBound, kBound);
-  let k2 = k1;
+  const x0 = s.x, y0 = s.y, x1 = g.x, y1 = g.y;
+  const dx0 = vScale * Math.cos(s.yaw);
+  const dy0 = vScale * Math.sin(s.yaw);
+  const ddx0 = ax0 * Math.cos(s.yaw) - (vScale * vScale) * s.k * Math.sin(s.yaw);
+  const ddy0 = ax0 * Math.sin(s.yaw) + (vScale * vScale) * s.k * Math.cos(s.yaw);
+  const dx1 = vScale * Math.cos(g.yaw);
+  const dy1 = vScale * Math.sin(g.yaw);
+  const ddx1 = ax1 * Math.cos(g.yaw) - (vScale * vScale) * g.k * Math.sin(g.yaw);
+  const ddy1 = ax1 * Math.sin(g.yaw) + (vScale * vScale) * g.k * Math.cos(g.yaw);
 
-  const evalResidual = (v) => {
-    const [Lv, k1v, k2v] = v;
-    const segs = [
-      { length:Lv, sigma:(k1v - s.k) / Math.max(Lv, 1e-9) },
-      { length:Lv, sigma:(k2v - k1v) / Math.max(Lv, 1e-9) },
-      { length:Lv, sigma:(g.k - k2v) / Math.max(Lv, 1e-9) },
-    ];
-    const points = integrateLinearCurvatureSegments({ x:s.x, y:s.y, yaw:s.yaw, k:s.k }, segs, cfg.step || 1);
-    const end = points[points.length - 1];
-    return {
-      points,
-      residual: [g.x - end.x, g.y - end.y, angleWrap(g.yaw - end.yaw)],
-    };
-  };
-
-  let best = evalResidual([L, k1, k2]);
-  for (let iter=0; iter<35; iter++){
-    const v = [L, k1, k2];
-    const err = best.residual;
-    if (Math.hypot(err[0], err[1]) < 0.15 && Math.abs(err[2]) < deg2rad(0.3)) break;
-
-    const eps = [Math.max(0.2, L*0.01), 5e-4, 5e-4];
-    const J = [[0,0,0],[0,0,0],[0,0,0]];
-    for (let j=0;j<3;j++){
-      const vp = v.slice();
-      vp[j] += eps[j];
-      const rp = evalResidual(vp).residual;
-      for (let r=0;r<3;r++) J[r][j] = (rp[r] - err[r]) / eps[j];
-    }
-    const delta = solve3x3(J, err);
-    if (!delta) break;
-    const dNorm = Math.hypot(delta[0], delta[1]*2000, delta[2]*2000);
-    const gain = dNorm > 25 ? 25 / dNorm : 1;
-    L = Math.max(1, L + delta[0] * gain);
-    k1 = clamp(k1 + delta[1] * gain, -kBound, kBound);
-    k2 = clamp(k2 + delta[2] * gain, -kBound, kBound);
-    best = evalResidual([L, k1, k2]);
+  function quinticCoeff(p0, p1, v0, v1, a0, a1){
+    const c0 = p0;
+    const c1 = v0;
+    const c2 = a0 * 0.5;
+    const A = p1 - (c0 + c1 + c2);
+    const B = v1 - (c1 + 2*c2);
+    const C = a1 - (2*c2);
+    const c3 = 10*A - 4*B + 0.5*C;
+    const c4 = -15*A + 7*B - C;
+    const c5 = 6*A - 3*B + 0.5*C;
+    return [c0, c1, c2, c3, c4, c5];
   }
 
-  const totalLength = 3 * L;
+  const cx = quinticCoeff(x0, x1, dx0, dx1, ddx0, ddx1);
+  const cy = quinticCoeff(y0, y1, dy0, dy1, ddy0, ddy1);
+  const evalPoly = (c, t) => c[0] + c[1]*t + c[2]*t*t + c[3]*t*t*t + c[4]*t*t*t*t + c[5]*t*t*t*t*t;
+  const evalD1 = (c, t) => c[1] + 2*c[2]*t + 3*c[3]*t*t + 4*c[4]*t*t*t + 5*c[5]*t*t*t*t;
+  const evalD2 = (c, t) => 2*c[2] + 6*c[3]*t + 12*c[4]*t*t + 20*c[5]*t*t*t;
+
+  const points = [];
+  const dtMin = 1e-6;
+  const dtMax = 0.02;
+  const dsTarget = Math.max(0.8, cfg.step || 1);
+  let t = 0;
+  while (t < 1 - 1e-10){
+    const px = evalPoly(cx, t);
+    const py = evalPoly(cy, t);
+    const vx = evalD1(cx, t);
+    const vy = evalD1(cy, t);
+    const ax = evalD2(cx, t);
+    const ay = evalD2(cy, t);
+    const speed = Math.max(1e-6, Math.hypot(vx, vy));
+    const yaw = Math.atan2(vy, vx);
+    const k = (vx * ay - vy * ax) / Math.pow(speed, 3);
+    points.push({ x:px, y:py, yaw:mod2pi(yaw), k });
+    const dt = clamp(dsTarget / speed, dtMin, dtMax);
+    t = Math.min(1, t + dt);
+  }
+  points.push({ x:g.x, y:g.y, yaw:mod2pi(g.yaw), k:g.k });
+
+  let totalLength = 0;
+  const cumLen = [0];
+  for (let i=1;i<points.length;i++){
+    totalLength += Math.hypot(points[i].x - points[i-1].x, points[i].y - points[i-1].y);
+    cumLen.push(totalLength);
+  }
+  const seg1Target = totalLength / 3;
+  const seg2Target = totalLength * 2 / 3;
+  const i1 = cumLen.findIndex(v => v >= seg1Target);
+  const i2 = cumLen.findIndex(v => v >= seg2Target);
+  const seg1 = cumLen[Math.max(1, i1)];
+  const seg2 = cumLen[Math.max(1, i2)] - seg1;
+  const seg3 = Math.max(0, totalLength - seg1 - seg2);
+
   return {
-    points: best.points,
+    points,
     totalLength,
     segments:['CLOTHOID-1','CLOTHOID-2','CLOTHOID-3'],
     type:'TC-G2',
-    rawSeg:[L, L, L],
+    rawSeg:[seg1, seg2, seg3],
   };
 }
 
@@ -1484,7 +1510,7 @@ function recalculate(){
   // CC-Dubinsはクロソイド近似により終点に微小な誤差が生じるため、許容誤差をR依存に設定
   const endTol = cfg.algorithm === 'cc_dubins'
     ? Math.max(2.0, cfg.radius * 0.1)
-    : (cfg.algorithm === 'reeds_shepp' ? 0.2 : 1e-6);
+    : (cfg.algorithm === 'reeds_shepp' ? 0.2 : (cfg.algorithm === 'three_clothoid_g2' ? 0.2 : 1e-6));
   const paths = generateCandidates(cfg).map(p => ({
     ...p,
     visible: true,

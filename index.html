@@ -57,6 +57,7 @@
       <select id="algorithm">
         <option value="linear">G0 Linear Path</option>
         <option value="single_clothoid_g1">G1 Clothoid Path</option>
+        <option value="three_clothoid_g2">G2 Three-Clothoid Path</option>
         <option value="dubins">G1 Dubins Path</option>
         <option value="reeds_shepp">G1 Reeds-Shepp Path</option>
         <option value="cc_dubins">G2 CC-Dubins Path</option>
@@ -70,7 +71,7 @@
         <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="sy" type="number" step="1" value="0" /></div>
       </div>
       <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="syaw" type="number" step="1" value="0" /></div>
-      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="number" step="0.05" value="0" /></div>
+      <div class="control only-kappa"><label>k <span class="unit">[1/mm]</span></label><input id="sk" type="number" step="0.05" value="0" /></div>
     </div>
 
     <div class="group">
@@ -80,14 +81,14 @@
         <div class="control"><label>Y <span class="unit">[mm]</span></label><input id="gy" type="number" step="1" value="800" /></div>
       </div>
       <div class="control only-theta"><label>θ <span class="unit">[°]</span></label><input id="gyaw" type="number" step="1" value="-90" /></div>
-      <div class="control only-curv"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="number" step="0.05" value="0" /></div>
+      <div class="control only-kappa"><label>k <span class="unit">[1/mm]</span></label><input id="gk" type="number" step="0.05" value="0" /></div>
     </div>
 
     <div class="group">
       <h2>Path</h2>
       <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="250" min="1" /></div>
-      <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="100" min="0" max="100" /></div>
-      <div class="small only-curv" id="sigmaRef">参考 sigma_max: - [10^-3/mm²]</div>
+      <div class="control only-cc"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="100" min="0" max="100" /></div>
+      <div class="small only-cc" id="sigmaRef">参考 sigma_max: - [10^-3/mm²]</div>
     </div>
 
     <div class="row"><button id="randomBtn">ランダム</button></div>
@@ -188,9 +189,11 @@ function updateInputVisibility(){
   const algo = $('algorithm').value;
   const needsTheta = algo !== 'linear';
   const needsRadius = (algo === 'dubins' || algo === 'reeds_shepp' || algo === 'cc_dubins');
+  const needsKappa = (algo === 'cc_dubins' || algo === 'three_clothoid_g2');
   document.querySelectorAll('.only-theta').forEach(e => e.style.display = needsTheta ? 'grid' : 'none');
   document.querySelectorAll('.only-turn').forEach(e => e.style.display = needsRadius ? 'grid' : 'none');
-  document.querySelectorAll('.only-curv').forEach(e => e.style.display = (algo === 'cc_dubins') ? 'grid' : 'none');
+  document.querySelectorAll('.only-kappa').forEach(e => e.style.display = needsKappa ? 'grid' : 'none');
+  document.querySelectorAll('.only-cc').forEach(e => e.style.display = (algo === 'cc_dubins') ? 'grid' : 'none');
 }
 
 const INPUT_LIMITS = {
@@ -276,16 +279,19 @@ function gatherInput(){
   if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') {
     radius = parseField('radius', v => v > 0);
   }
-  if (algorithm === 'cc_dubins') {
+  if (algorithm === 'cc_dubins' || algorithm === 'three_clothoid_g2') {
     sk = parseField('sk', null, { integerOnly: false, step: 0.05 });
     gk = parseField('gk', null, { integerOnly: false, step: 0.05 });
+  }
+  if (algorithm === 'cc_dubins') {
     ccTransition = parseField('ccTransition', v => v >= 0 && v <= 100);
   }
 
   const required = { sx, sy, gx, gy };
   if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw });
   if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') Object.assign(required, { radius });
-  if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
+  if (algorithm === 'cc_dubins' || algorithm === 'three_clothoid_g2') Object.assign(required, { sk, gk });
+  if (algorithm === 'cc_dubins') Object.assign(required, { ccTransition });
 
   const effectiveTransitionRate = clampTransitionRate((ccTransition || 0) / 100, radius || 1);
   const sigmaMax = transitionRateToSigma(effectiveTransitionRate, radius || 1);
@@ -1066,6 +1072,109 @@ function sampleSingleClothoidG1(s, g, step){
   };
 }
 
+function integrateLinearCurvatureSegments(startPose, segments, step = 1){
+  const pts = [{ x:startPose.x, y:startPose.y, yaw:mod2pi(startPose.yaw), k:startPose.k }];
+  const st = { x:startPose.x, y:startPose.y, yaw:startPose.yaw, k:startPose.k };
+  const dsTarget = Math.max(0.25, step || 1);
+  for (const seg of segments){
+    const L = seg.length;
+    if (!Number.isFinite(L) || L <= 1e-9) continue;
+    const sigma = seg.sigma;
+    const n = Math.max(1, Math.ceil(L / dsTarget));
+    const ds = L / n;
+    for (let i=0;i<n;i++){
+      const c = Math.cos(st.yaw);
+      const si = Math.sin(st.yaw);
+      const k = st.k;
+      const ds2 = ds * ds;
+      const ds3 = ds2 * ds;
+      const ds4 = ds3 * ds;
+      const ds5 = ds4 * ds;
+
+      st.x += c*ds
+        - 0.5*k*si*ds2
+        + ((-sigma*si - k*k*c)/6)*ds3
+        + ((k*k*k*si - 3*k*sigma*c)/24)*ds4
+        + (((k*k*k*k - 3*sigma*sigma)*c + 6*k*k*sigma*si)/120)*ds5;
+
+      st.y += si*ds
+        + 0.5*k*c*ds2
+        + ((sigma*c - k*k*si)/6)*ds3
+        + ((-k*k*k*c - 3*k*sigma*si)/24)*ds4
+        + (((k*k*k*k - 3*sigma*sigma)*si - 6*k*k*sigma*c)/120)*ds5;
+
+      st.yaw = angleWrap(st.yaw + k*ds + 0.5*sigma*ds2);
+      st.k += sigma * ds;
+      pts.push({ x:st.x, y:st.y, yaw:mod2pi(st.yaw), k:st.k });
+    }
+  }
+  return pts;
+}
+
+function sampleThreeClothoidG2(cfg){
+  const s = cfg.start;
+  const g = cfg.goal;
+  const chord = Math.hypot(g.x - s.x, g.y - s.y);
+  if (chord < 1e-9){
+    return { points:[{x:s.x,y:s.y,yaw:s.yaw,k:s.k}], totalLength:0, segments:['CLOTHOID','CLOTHOID','CLOTHOID'], type:'TC-G2', rawSeg:[0,0,0] };
+  }
+
+  const yawDelta = angleWrap(g.yaw - s.yaw);
+  const kBound = Math.max(0.03, 2 / Math.max(1, chord));
+
+  let L = Math.max(5, chord / 3);
+  let k1 = clamp((2 * yawDelta / L - s.k - g.k) / 4, -kBound, kBound);
+  let k2 = k1;
+
+  const evalResidual = (v) => {
+    const [Lv, k1v, k2v] = v;
+    const segs = [
+      { length:Lv, sigma:(k1v - s.k) / Math.max(Lv, 1e-9) },
+      { length:Lv, sigma:(k2v - k1v) / Math.max(Lv, 1e-9) },
+      { length:Lv, sigma:(g.k - k2v) / Math.max(Lv, 1e-9) },
+    ];
+    const points = integrateLinearCurvatureSegments({ x:s.x, y:s.y, yaw:s.yaw, k:s.k }, segs, cfg.step || 1);
+    const end = points[points.length - 1];
+    return {
+      points,
+      residual: [g.x - end.x, g.y - end.y, angleWrap(g.yaw - end.yaw)],
+    };
+  };
+
+  let best = evalResidual([L, k1, k2]);
+  for (let iter=0; iter<35; iter++){
+    const v = [L, k1, k2];
+    const err = best.residual;
+    if (Math.hypot(err[0], err[1]) < 0.15 && Math.abs(err[2]) < deg2rad(0.3)) break;
+
+    const eps = [Math.max(0.2, L*0.01), 5e-4, 5e-4];
+    const J = [[0,0,0],[0,0,0],[0,0,0]];
+    for (let j=0;j<3;j++){
+      const vp = v.slice();
+      vp[j] += eps[j];
+      const rp = evalResidual(vp).residual;
+      for (let r=0;r<3;r++) J[r][j] = (rp[r] - err[r]) / eps[j];
+    }
+    const delta = solve3x3(J, err);
+    if (!delta) break;
+    const dNorm = Math.hypot(delta[0], delta[1]*2000, delta[2]*2000);
+    const gain = dNorm > 25 ? 25 / dNorm : 1;
+    L = Math.max(1, L + delta[0] * gain);
+    k1 = clamp(k1 + delta[1] * gain, -kBound, kBound);
+    k2 = clamp(k2 + delta[2] * gain, -kBound, kBound);
+    best = evalResidual([L, k1, k2]);
+  }
+
+  const totalLength = 3 * L;
+  return {
+    points: best.points,
+    totalLength,
+    segments:['CLOTHOID-1','CLOTHOID-2','CLOTHOID-3'],
+    type:'TC-G2',
+    rawSeg:[L, L, L],
+  };
+}
+
 function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
   const samplingStep = 1;
   const target = 1/R;
@@ -1241,6 +1350,11 @@ function generateCandidates(cfg){
   if (cfg.algorithm === 'single_clothoid_g1') {
     const sc = sampleSingleClothoidG1(cfg.start, cfg.goal, cfg.step);
     list.push({ id:'SC_G1', label:'SC-G1', ...sc });
+    return list;
+  }
+  if (cfg.algorithm === 'three_clothoid_g2') {
+    const tc = sampleThreeClothoidG2(cfg);
+    list.push({ id:'TC_G2', label:'TC-G2', ...tc });
     return list;
   }
   if (cfg.algorithm === 'reeds_shepp') {

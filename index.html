@@ -57,6 +57,7 @@
       <select id="algorithm">
         <option value="linear">G0 Linear Path</option>
         <option value="single_clothoid_g1">G1 Clothoid Path</option>
+        <option value="three_clothoid_g2">G2 Three Clothoid Path</option>
         <option value="dubins">G1 Dubins Path</option>
         <option value="reeds_shepp">G1 Reeds-Shepp Path</option>
         <option value="cc_dubins">G2 CC-Dubins Path</option>
@@ -88,6 +89,9 @@
       <div class="control only-turn"><label>最小旋回半径 R <span class="unit">[mm]</span></label><input id="radius" type="number" step="1" value="250" min="1" /></div>
       <div class="control only-curv"><label>CC遷移率 <span class="unit">[%]</span></label><input id="ccTransition" type="number" step="1" value="100" min="0" max="100" /></div>
       <div class="small only-curv" id="sigmaRef">参考 sigma_max: - [10^-3/mm²]</div>
+      <div class="control only-g2"><label>Dmax <span class="unit">[°]</span></label><input id="g2Dmax" type="number" step="1" value="0" min="0" /></div>
+      <div class="control only-g2"><label>dmax <span class="unit">[°]</span></label><input id="g2dmax" type="number" step="1" value="0" min="0" /></div>
+      <div class="small only-g2">pyclothoids SolveG2準拠: 0は自動チューニング</div>
     </div>
 
     <div class="row"><button id="randomBtn">ランダム</button></div>
@@ -188,14 +192,18 @@ function updateInputVisibility(){
   const algo = $('algorithm').value;
   const needsTheta = algo !== 'linear';
   const needsRadius = (algo === 'dubins' || algo === 'reeds_shepp' || algo === 'cc_dubins');
+  const needsCurvature = (algo === 'cc_dubins' || algo === 'three_clothoid_g2');
   document.querySelectorAll('.only-theta').forEach(e => e.style.display = needsTheta ? 'grid' : 'none');
   document.querySelectorAll('.only-turn').forEach(e => e.style.display = needsRadius ? 'grid' : 'none');
-  document.querySelectorAll('.only-curv').forEach(e => e.style.display = (algo === 'cc_dubins') ? 'grid' : 'none');
+  document.querySelectorAll('.only-curv').forEach(e => e.style.display = needsCurvature ? 'grid' : 'none');
+  document.querySelectorAll('.only-g2').forEach(e => e.style.display = (algo === 'three_clothoid_g2') ? 'grid' : 'none');
 }
 
 const INPUT_LIMITS = {
   radius:       { min: 1 },
   ccTransition: { min: 0, max: 100 },
+  g2Dmax:       { min: 0 },
+  g2dmax:       { min: 0 },
 };
 
 const CC_PARAM_EPS = 1e-12;
@@ -268,7 +276,7 @@ function gatherInput(){
   const sx = parseField('sx'); const sy = parseField('sy');
   const gx = parseField('gx'); const gy = parseField('gy');
 
-  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, ccTransition = 25;
+  let syaw = 0, gyaw = 0, sk = 0, gk = 0, radius = 1, ccTransition = 25, g2Dmax = 0, g2dmax = 0;
 
   if (algorithm !== 'linear') {
     syaw = parseField('syaw'); gyaw = parseField('gyaw');
@@ -281,11 +289,18 @@ function gatherInput(){
     gk = parseField('gk', null, { integerOnly: false, step: 0.05 });
     ccTransition = parseField('ccTransition', v => v >= 0 && v <= 100);
   }
+  if (algorithm === 'three_clothoid_g2') {
+    sk = parseField('sk', null, { integerOnly: false, step: 0.05 });
+    gk = parseField('gk', null, { integerOnly: false, step: 0.05 });
+    g2Dmax = parseField('g2Dmax', v => v >= 0);
+    g2dmax = parseField('g2dmax', v => v >= 0);
+  }
 
   const required = { sx, sy, gx, gy };
   if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw });
   if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') Object.assign(required, { radius });
   if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
+  if (algorithm === 'three_clothoid_g2') Object.assign(required, { sk, gk, g2Dmax, g2dmax });
 
   const effectiveTransitionRate = clampTransitionRate((ccTransition || 0) / 100, radius || 1);
   const sigmaMax = transitionRateToSigma(effectiveTransitionRate, radius || 1);
@@ -302,6 +317,8 @@ function gatherInput(){
     step: 1,
     sigmaMax,
     ccTransition: effectiveTransitionRate,
+    g2Dmax: deg2rad(g2Dmax || 0),
+    g2dmax: deg2rad(g2dmax || 0),
     showPoints: $('showPoints').checked,
     showCurvature: $('showCurvature').checked,
   };
@@ -455,7 +472,7 @@ function drawGoalIcon(goal,cfg){
 }
 
 function drawCurvatureGuide(pose, cfg, color){
-  if (cfg.algorithm !== 'cc_dubins' || !cfg.showCurvature || Math.abs(pose.k) <= 1e-8) return;
+  if ((cfg.algorithm !== 'cc_dubins' && cfg.algorithm !== 'three_clothoid_g2') || !cfg.showCurvature || Math.abs(pose.k) <= 1e-8) return;
 
   const R = Math.min(150, Math.abs(1 / pose.k));
   const sign = Math.sign(pose.k);
@@ -1066,6 +1083,168 @@ function sampleSingleClothoidG1(s, g, step){
   };
 }
 
+function integrateClothoidSegment(st, length, sigma, samplingStep, outPoints){
+  const n = Math.max(1, Math.ceil(length / Math.max(1e-6, samplingStep)));
+  const ds = length / n;
+  for (let i=0;i<n;i++){
+    const c = Math.cos(st.yaw);
+    const si = Math.sin(st.yaw);
+    const k = st.k;
+    const ds2 = ds * ds;
+    const ds3 = ds2 * ds;
+    const ds4 = ds3 * ds;
+    const ds5 = ds4 * ds;
+
+    st.x += c*ds
+      - 0.5*k*si*ds2
+      + ((-sigma*si - k*k*c)/6)*ds3
+      + ((k*k*k*si - 3*k*sigma*c)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*c + 6*k*k*sigma*si)/120)*ds5;
+
+    st.y += si*ds
+      + 0.5*k*c*ds2
+      + ((sigma*c - k*k*si)/6)*ds3
+      + ((-k*k*k*c - 3*k*sigma*si)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*si - 6*k*k*sigma*c)/120)*ds5;
+
+    st.yaw = angleWrap(st.yaw + k*ds + 0.5*sigma*ds2);
+    st.k += sigma * ds;
+    if (outPoints) outPoints.push({ x:st.x, y:st.y, yaw:mod2pi(st.yaw), k:st.k });
+  }
+}
+
+function simulateThreeClothoidG2(s, g, params, samplingStep = 1, withPoints = true){
+  const { L1, L2, L3, k1, k2 } = params;
+  if (![L1,L2,L3,k1,k2].every(Number.isFinite) || L1 <= 1e-4 || L2 <= 1e-4 || L3 <= 1e-4) return null;
+  const st = { x:s.x, y:s.y, yaw:s.yaw, k:s.k || 0 };
+  const points = withPoints ? [{ x:st.x, y:st.y, yaw:mod2pi(st.yaw), k:st.k }] : null;
+  const sigma1 = (k1 - st.k) / L1;
+  integrateClothoidSegment(st, L1, sigma1, samplingStep, points);
+  const yawAtJoin1 = st.yaw;
+  const sigma2 = (k2 - st.k) / L2;
+  integrateClothoidSegment(st, L2, sigma2, samplingStep, points);
+  const yawAtJoin2 = st.yaw;
+  const sigma3 = ((g.k || 0) - st.k) / L3;
+  integrateClothoidSegment(st, L3, sigma3, samplingStep, points);
+  return {
+    end: { x:st.x, y:st.y, yaw:mod2pi(st.yaw), k:st.k },
+    joins: { yaw1:yawAtJoin1, yaw2:yawAtJoin2 },
+    sigmas: [sigma1, sigma2, sigma3],
+    points,
+  };
+}
+
+function sampleThreeClothoidG2(s, g, step, Dmax = 0, dmax = 0){
+  const ref = sampleSingleClothoidG1(s, g, 1);
+  const chord = Math.hypot(g.x - s.x, g.y - s.y);
+  const totalRefLength = Number.isFinite(ref.totalLength) && ref.totalLength > 3 ? ref.totalLength : Math.max(30, chord);
+  const autoDmax = Dmax > 1e-9 ? Dmax : deg2rad(85);
+  const autoDmaxSmall = dmax > 1e-9 ? dmax : deg2rad(35);
+  const fairYawAt = (t) => {
+    if (!ref.points || !ref.points.length) return s.yaw + angleWrap(g.yaw - s.yaw) * t;
+    const idx = clamp(Math.round(t * (ref.points.length - 1)), 0, ref.points.length - 1);
+    return ref.points[idx].yaw;
+  };
+
+  const objective = (v) => {
+    const params = {
+      L1: Math.exp(v[0]),
+      L2: Math.exp(v[1]),
+      L3: Math.exp(v[2]),
+      k1: v[3],
+      k2: v[4],
+    };
+    const sim = simulateThreeClothoidG2(s, g, params, 2, false);
+    if (!sim) return { cost: 1e16, params: null, sim: null };
+    const dx = sim.end.x - g.x;
+    const dy = sim.end.y - g.y;
+    const dyaw = angleWrap(sim.end.yaw - g.yaw);
+    const dk = sim.end.k - (g.k || 0);
+    const joinStartDev = Math.abs(angleWrap(sim.joins.yaw1 - s.yaw));
+    const joinEndDev = Math.abs(angleWrap(g.yaw - sim.joins.yaw2));
+    const dPenalty = Math.max(0, joinStartDev - autoDmax) ** 2 + Math.max(0, joinEndDev - autoDmax) ** 2;
+    const fairPenalty =
+      (angleWrap(sim.joins.yaw1 - fairYawAt(1/3)) ** 2) +
+      (angleWrap(sim.joins.yaw2 - fairYawAt(2/3)) ** 2);
+    const fairLimitPenalty = Math.max(0, Math.sqrt(fairPenalty) - autoDmaxSmall) ** 2;
+    const sigmaNorm = sim.sigmas.reduce((acc, sv) => acc + sv * sv, 0);
+    const lengthSum = params.L1 + params.L2 + params.L3;
+    const cost =
+      1.0 * (dx*dx + dy*dy)
+      + 1200 * (dyaw*dyaw)
+      + 4000 * (dk*dk)
+      + 250 * dPenalty
+      + 180 * fairPenalty
+      + 250 * fairLimitPenalty
+      + 0.0015 * lengthSum
+      + 0.03 * sigmaNorm;
+    return { cost, params, sim };
+  };
+
+  const seeds = [];
+  const baseK = (s.k || 0) * 0.5 + (g.k || 0) * 0.5;
+  const Ls = totalRefLength / 3;
+  seeds.push([Math.log(Ls), Math.log(Ls), Math.log(Ls), baseK, baseK]);
+  for (let i=0;i<8;i++){
+    const r = (a,b)=>a + (b-a)*Math.random();
+    seeds.push([
+      Math.log(Ls * r(0.6, 1.6)),
+      Math.log(Ls * r(0.6, 1.8)),
+      Math.log(Ls * r(0.6, 1.6)),
+      r(-0.02, 0.02),
+      r(-0.02, 0.02),
+    ]);
+  }
+
+  let best = { cost: Infinity, params: null, sim: null };
+  for (const seed of seeds){
+    let v = seed.slice();
+    let stepSize = 0.22;
+    for (let iter=0; iter<90; iter++){
+      const cur = objective(v);
+      if (cur.cost < best.cost) best = cur;
+      const grad = new Array(5).fill(0);
+      for (let j=0;j<5;j++){
+        const eps = j < 3 ? 0.03 : 0.0008;
+        const vp = v.slice(); vp[j] += eps;
+        const vm = v.slice(); vm[j] -= eps;
+        const cp = objective(vp).cost;
+        const cm = objective(vm).cost;
+        grad[j] = (cp - cm) / (2 * eps);
+      }
+      const norm = Math.hypot(...grad);
+      if (!Number.isFinite(norm) || norm < 1e-7) break;
+      const candidate = v.map((vv, j) => vv - stepSize * grad[j] / norm);
+      const next = objective(candidate);
+      if (next.cost < cur.cost) {
+        v = candidate;
+        stepSize = Math.min(0.45, stepSize * 1.04);
+      } else {
+        stepSize *= 0.6;
+        if (stepSize < 1e-4) break;
+      }
+    }
+  }
+
+  if (!best.params) {
+    const fallback = sampleSingleClothoidG1(s, g, step);
+    return { points:fallback.points, totalLength:fallback.totalLength, segments:['CLOTHOID'], type:'G2-3CLOTHOID-FALLBACK', rawSeg:[fallback.totalLength] };
+  }
+
+  const sim = simulateThreeClothoidG2(s, g, best.params, Math.max(1, step || 1), true);
+  let len = 0;
+  for (let i=1;i<sim.points.length;i++) {
+    len += Math.hypot(sim.points[i].x - sim.points[i-1].x, sim.points[i].y - sim.points[i-1].y);
+  }
+  return {
+    points: sim.points,
+    totalLength: len,
+    segments:['CLOTHOID','CLOTHOID','CLOTHOID'],
+    type:'G2-3CLOTHOID',
+    rawSeg:[best.params.L1, best.params.L2, best.params.L3],
+  };
+}
+
 function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
   const samplingStep = 1;
   const target = 1/R;
@@ -1243,6 +1422,11 @@ function generateCandidates(cfg){
     list.push({ id:'SC_G1', label:'SC-G1', ...sc });
     return list;
   }
+  if (cfg.algorithm === 'three_clothoid_g2') {
+    const g2 = sampleThreeClothoidG2(cfg.start, cfg.goal, cfg.step, cfg.g2Dmax, cfg.g2dmax);
+    list.push({ id:'G2_3C', label:'G2-3CLOTHOID', ...g2 });
+    return list;
+  }
   if (cfg.algorithm === 'reeds_shepp') {
     const rsReference = generateReedsSheppCandidatesReference(cfg);
     if (rsReference.length) return rsReference;
@@ -1370,7 +1554,9 @@ function recalculate(){
   // CC-Dubinsはクロソイド近似により終点に微小な誤差が生じるため、許容誤差をR依存に設定
   const endTol = cfg.algorithm === 'cc_dubins'
     ? Math.max(2.0, cfg.radius * 0.1)
-    : (cfg.algorithm === 'reeds_shepp' ? 0.2 : 1e-6);
+    : (cfg.algorithm === 'three_clothoid_g2'
+      ? 1.2
+      : (cfg.algorithm === 'reeds_shepp' ? 0.2 : 1e-6));
   const paths = generateCandidates(cfg).map(p => ({
     ...p,
     visible: true,
@@ -1661,7 +1847,7 @@ canvas.addEventListener('mouseleave', () => {
     $(id).addEventListener('change', () => { clampInputToLimits(id); recalculate(); });
   });
 
-['radius','ccTransition'].forEach(id => {
+['radius','ccTransition','g2Dmax','g2dmax'].forEach(id => {
   $(id).addEventListener('input', () => {
     clampInputToLimits(id);
     recalculate();
@@ -1681,6 +1867,8 @@ $('randomBtn').addEventListener('click', ()=>{
   $('gk').value=r(-1,1);
   $('radius').value=r(50,400);
   $('ccTransition').value=r(0,100);
+  $('g2Dmax').value=r(20,120);
+  $('g2dmax').value=r(10,60);
   state.camera.initialized = false;
   recalculate();
 });

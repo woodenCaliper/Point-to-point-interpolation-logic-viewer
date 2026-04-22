@@ -6,7 +6,7 @@
 
 ## 要件サマリ（`human requirement.md` 準拠）
 - 単一HTMLで 2D 経路比較ビューアを実装する。
-- 必須アルゴリズムは Linear / Dubins / CC-Dubins / Single Clothoid G1。
+- 必須アルゴリズムは Linear / Dubins / CC-Dubins / Single Clothoid G1 / Three Clothoid G2。
 - 単位は位置系=mm、角度系=°（degree）。
 - 数値入力は整数のみとする（小数入力なし）。
 - 最短判定は距離のみで行う。

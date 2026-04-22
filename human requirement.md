@@ -90,6 +90,11 @@
 - `sigma_max`（最大曲率変化率, 単位 `1/mm²`）は**参考値として表示のみ**行い、直接入力はさせない。
 - 参考表示の `sigma_max` は視認性のため **1000倍スケール**で表示し、単位は `10^-3/mm²` とする。
 
+### G2 Three-Clothoid
+- G2 Three-Clothoid は、`pyclothoids.SolveG2` の考え方（3つのクロソイドで `x,y,θ,k` を補間）に準拠した実装とする。
+- ループ抑制や解の公平性は `SolveG2` の `Dmax` / `dmax` コンセプトに合わせて制御する。
+- 参照文献は Bertolazzi, Frego (2018) *On the G2 Hermite interpolation problem with clothoids* とする。
+
 ### GitHub Pages 公開ルール
 - GitHub Pages への公開方法は、できるだけ **GitHub公式かつ一般的な方法**に則る。
 

@@ -1127,6 +1127,8 @@ function sampleThreeClothoidG2(cfg){
   const th1Base = rangeSymm(g.yaw - phi);
   const kappa0 = s.k;
   const kappa1 = g.k;
+  const DmaxDefault = deg2rad(150);
+  const dmaxDefault = deg2rad(120);
 
   function generalizedFresnelCSMoments(order, a, b, c){
     const N = 180;
@@ -1307,10 +1309,30 @@ function sampleThreeClothoidG2(cfg){
     let totalLength = 0;
     for (let i=1;i<points.length;i++) totalLength += Math.hypot(points[i].x-points[i-1].x, points[i].y-points[i-1].y);
     const end = points[points.length-1];
+    const d0 = Math.abs(angleWrap(p0[p0.length-1].yaw - p0[0].yaw));
+    const d1 = Math.abs(angleWrap(p1[p1.length-1].yaw - p1[0].yaw));
+
+    // pyclothoids.SolveG2 の Dmax / dmax コンセプトに寄せた公平性評価
+    const g1Ref = sampleSingleClothoidG1(s, g, cfg.step || 1);
+    const refPts = g1Ref.points || [];
+    let dFair = 0;
+    if (refPts.length > 3){
+      const idxA = clamp(Math.round((L0 / Math.max(g1Ref.totalLength, 1e-6)) * (refPts.length - 1)), 0, refPts.length - 1);
+      const idxB = clamp(Math.round((1 - L1 / Math.max(g1Ref.totalLength, 1e-6)) * (refPts.length - 1)), 0, refPts.length - 1);
+      dFair = Math.max(
+        Math.abs(angleWrap(p0[p0.length-1].yaw - (refPts[idxA].yaw ?? p0[p0.length-1].yaw))),
+        Math.abs(angleWrap(p1[0].yaw - (refPts[idxB].yaw ?? p1[0].yaw))),
+      );
+    }
+
+    const dmaxPenalty = Math.max(0, Math.max(d0, d1) - DmaxDefault);
+    const fairPenalty = Math.max(0, dFair - dmaxDefault);
     const err = Math.hypot(end.x - g.x, end.y - g.y)
       + 80 * Math.abs(angleWrap(end.yaw - g.yaw))
       + 200 * Math.abs((end.k??0) - g.k)
       + 500 * (j0 + j1)
+      + 260 * dmaxPenalty
+      + 220 * fairPenalty
       + 0.03 * (L0 + L1 + 2*LM);
     return { points, rawSeg:[L0, 2*LM, L1], totalLength, err };
   }

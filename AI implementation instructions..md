@@ -19,6 +19,8 @@
 - サンプリング間隔は 1mm 固定とし、ユーザー入力で変更させない。
 - CC-Dubins は厳密方式で実装する（近似実装は不可）。
 - 単一クロソイドG1補間は、始点・終点の位置と方位（G1）を満たす単一セグメントのクロソイドとして実装する。
+- G2 Three-Clothoid は `pyclothoids.SolveG2` の方針に寄せ、3セグメントクロソイドで `x,y,θ,k` を満たす。
+- G2 Three-Clothoid のループ抑制・公平性制御は `Dmax` / `dmax` コンセプトを採用する。
 - CC-Dubins の参照ソースは Holger Banzhaf らの `steering_functions` とする。
 - CC-Dubins の UI入力は `CC遷移率[%]` のみとする。
 - `sigma_max`（最大曲率変化率, `1/mm²`）は `CC遷移率[%]` と `R` から内部換算し、UIには参考値テキストとして表示する。
@@ -83,7 +85,12 @@
 9. **CC-Dubins 厳密実装方針**
    - CC-Dubins は採用文献・定義式・拘束条件を先に固定し、その仕様に一致する実装のみ許容する。
    - 参照実装/定義は Holger Banzhaf らの `steering_functions` を正とする。
-   - 近似的な補間や暫定実装は導入しない。
+- 近似的な補間や暫定実装は導入しない。
+
+10. **G2 Three-Clothoid 実装方針**
+   - `pyclothoids.SolveG2` のインターフェース思想（3クロソイド解 + `Dmax`/`dmax`）を踏襲する。
+   - 参照文献は Bertolazzi, Frego (2018) *On the G2 Hermite interpolation problem with clothoids* とする。
+   - 複数解があり得るため、`Dmax` と `dmax` に相当する公平性指標で候補を抑制する。
 
 10. **公開方針（GitHub Pages）**
    - 配布形態は GitHub Pages を前提とする。

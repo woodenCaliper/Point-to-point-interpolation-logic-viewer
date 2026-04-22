@@ -1157,169 +1157,207 @@ function simulateThreeClothoidG2(s, g, params, samplingStep = 1, withPoints = tr
   };
 }
 
-function sampleThreeClothoidG2(s, g, step, Dmax = 0, dmax = 0){
-  const ref = sampleSingleClothoidG1(s, g, 1);
-  const chord = Math.hypot(g.x - s.x, g.y - s.y);
-  const totalRefLength = Number.isFinite(ref.totalLength) && ref.totalLength > 3 ? ref.totalLength : Math.max(40, chord);
-  const autoDmax = Dmax > 1e-9 ? Dmax : deg2rad(85);
-  const autoDmaxSmall = dmax > 1e-9 ? dmax : deg2rad(35);
-  const fairYawAt = (t) => {
-    if (!ref.points || !ref.points.length) return s.yaw + angleWrap(g.yaw - s.yaw) * t;
-    const idx = clamp(Math.round(t * (ref.points.length - 1)), 0, ref.points.length - 1);
-    return ref.points[idx].yaw;
-  };
-  const fairKappaAt = (t) => {
-    if (!ref.points || ref.points.length < 2) return 0.5 * ((s.k || 0) + (g.k || 0));
-    const idx = clamp(Math.round(t * (ref.points.length - 1)), 1, ref.points.length - 2);
-    return computePointCurvature(ref.points, idx);
-  };
+function integrateClothoidSigned(state, length, sigma, samplingStep = 1, outPoints = null){
+  const absL = Math.abs(length);
+  const n = Math.max(1, Math.ceil(absL / Math.max(1e-6, samplingStep)));
+  const ds = (length >= 0 ? 1 : -1) * (absL / n);
+  for (let i = 0; i < n; i++) {
+    const c = Math.cos(state.yaw);
+    const si = Math.sin(state.yaw);
+    const k = state.k;
+    const ds2 = ds * ds;
+    const ds3 = ds2 * ds;
+    const ds4 = ds3 * ds;
+    const ds5 = ds4 * ds;
 
-  const evalSystem = (v) => {
-    const params = { L1: v[0], L2: v[1], L3: v[2], k1: v[3], k2: v[4] };
-    const sim = simulateThreeClothoidG2(s, g, params, 1.5, false);
-    if (!sim) return null;
-    const joinStartDev = Math.abs(angleWrap(sim.joins.yaw1 - s.yaw));
-    const joinEndDev = Math.abs(angleWrap(g.yaw - sim.joins.yaw2));
-    const fairStart = Math.abs(angleWrap(sim.joins.yaw1 - fairYawAt(1/3)));
-    const fairEnd = Math.abs(angleWrap(sim.joins.yaw2 - fairYawAt(2/3)));
+    state.x += c*ds
+      - 0.5*k*si*ds2
+      + ((-sigma*si - k*k*c)/6)*ds3
+      + ((k*k*k*si - 3*k*sigma*c)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*c + 6*k*k*sigma*si)/120)*ds5;
+
+    state.y += si*ds
+      + 0.5*k*c*ds2
+      + ((sigma*c - k*k*si)/6)*ds3
+      + ((-k*k*k*c - 3*k*sigma*si)/24)*ds4
+      + (((k*k*k*k - 3*sigma*sigma)*si - 6*k*k*sigma*c)/120)*ds5;
+
+    state.yaw = angleWrap(state.yaw + k*ds + 0.5*sigma*ds2);
+    state.k += sigma * ds;
+    if (outPoints) outPoints.push({ x: state.x, y: state.y, yaw: mod2pi(state.yaw), k: state.k });
+  }
+}
+
+function generalizedFresnelCS0(a, b, c, n = 240){
+  const N = Math.max(40, n + (n % 2));
+  const h = 1 / N;
+  const phase = (t) => 0.5 * a * t * t + b * t + c;
+  let sx = Math.cos(phase(0)) + Math.cos(phase(1));
+  let sy = Math.sin(phase(0)) + Math.sin(phase(1));
+  for (let i = 1; i < N; i++) {
+    const t = i * h;
+    const w = (i % 2 === 0) ? 2 : 4;
+    const ph = phase(t);
+    sx += w * Math.cos(ph);
+    sy += w * Math.sin(ph);
+  }
+  return { X: sx * h / 3, Y: sy * h / 3 };
+}
+
+function sampleThreeClothoidG2(s, g, step, Dmax = 0, dmax = 0){
+  const dx = g.x - s.x;
+  const dy = g.y - s.y;
+  const hypotD = Math.hypot(dx, dy);
+  if (hypotD < 1e-9) {
+    return { points:[{x:s.x,y:s.y,yaw:s.yaw,k:s.k||0}], totalLength:0, segments:['CLOTHOID','CLOTHOID','CLOTHOID'], type:'G2-3CLOTHOID', rawSeg:[0,0,0] };
+  }
+
+  const phi = Math.atan2(dy, dx);
+  const Lscale = 2 / hypotD;
+  const th0 = angleWrap(s.yaw - phi);
+  const th1 = angleWrap(g.yaw - phi);
+  const k0s = (s.k || 0) / Lscale;
+  const k1s = (g.k || 0) / Lscale;
+
+  let D = Dmax > 0 ? Dmax : Math.PI;
+  let d = dmax > 0 ? dmax : Math.PI / 8;
+  D = clamp(D, 1e-9, TAU);
+  d = clamp(d, 1e-9, Math.PI / 4);
+
+  const sg = sampleSingleClothoidG1({x:-1,y:0,yaw:th0},{x:1,y:0,yaw:th1},0.25);
+  const sgLen = Math.max(1e-3, sg.totalLength || 2);
+  const sgYawAt = (sArc) => {
+    if (!sg.points?.length) return th0 + angleWrap(th1 - th0) * (sArc / sgLen);
+    const t = clamp(sArc / sgLen, 0, 1);
+    const idx = clamp(Math.round(t * (sg.points.length - 1)), 0, sg.points.length - 1);
+    return sg.points[idx].yaw;
+  };
+  const sgKBegin = computePointCurvature(sg.points, 1);
+  const sgKEnd = computePointCurvature(sg.points, Math.max(1, sg.points.length - 2));
+  const sgDK = Math.abs((sgKEnd - sgKBegin) / Math.max(1e-6, sgLen));
+  const L3 = sgLen / 3;
+
+  let s0 = L3;
+  let s1 = L3;
+  let tmp = 0.5 * Math.abs(k0s - sgKBegin) / d;
+  if (tmp * s0 > 1) s0 = 1 / tmp;
+  tmp = (Math.abs(k0s + sgKBegin) + s0 * sgDK) / (2 * D);
+  if (tmp * s0 > 1) s0 = 1 / tmp;
+  tmp = 0.5 * Math.abs(k1s - sgKEnd) / d;
+  if (tmp * s1 > 1) s1 = 1 / tmp;
+  tmp = (Math.abs(k1s + sgKEnd) + s1 * sgDK) / (2 * D);
+  if (tmp * s1 > 1) s1 = 1 / tmp;
+  const dth = Math.abs(th0 - th1) / TAU;
+  const scale = Math.pow(Math.cos(Math.pow(dth, 4) * Math.PI / 2), 3);
+  s0 *= scale;
+  s1 *= scale;
+  const L = Math.max(1e-4, (3 * L3 - s0 - s1) / 2);
+  let thMGuess = sgYawAt(s0 + L);
+
+  const K0 = k0s * s0;
+  const K1 = k1s * s1;
+  const t0 = 2 * th0 + K0;
+  const t1 = 2 * th1 - K1;
+  const c0 = s0 * s1;
+  const c1 = 2 * s0;
+  const c2 = 0.25 * ((K1 - 6 * (K0 + th0) - 2 * th1) * s0 - 3 * K0 * s1);
+  const c3 = -c0 * (K0 + th0);
+  const c4 = 2 * s1;
+  const c5 = 0.25 * ((6 * (K1 - th1) - K0 - 2 * th0) * s1 + 3 * K1 * s0);
+  const c6 = c0 * (K1 - th1);
+  const c7 = -0.5 * (s0 + s1);
+  const c8 = th0 + th1 + 0.5 * (K0 - K1);
+  const c9 = 0.25 * (t1 * s0 + t0 * s1);
+  const c10 = 0.5 * (s1 - s0);
+  const c11 = 0.5 * (th1 - th0) - 0.25 * (K0 + K1);
+  const c12 = 0.25 * (t1 * s0 - t0 * s1);
+  const c13 = 0.5 * s0 * s1;
+  const c14 = 0.75 * (s0 + s1);
+
+  const evalF = (vars) => {
+    const sM = vars[0];
+    const thM = vars[1];
+    const dsM = 1 / (c13 + (c14 + sM) * sM);
+    const dK0 = dsM * (c0 * thM + sM * (c1 * thM - K0 * sM + c2) + c3);
+    const dK1 = dsM * (c0 * thM + sM * (c4 * thM + K1 * sM + c5) + c6);
+    const dKM = dsM * sM * (thM * (c7 - 2 * sM) + c8 * sM + c9);
+    const KM = dsM * sM * (c10 * thM + c11 * sM + c12);
+    const F0 = generalizedFresnelCS0(dK0, K0, th0);
+    const F1 = generalizedFresnelCS0(dK1, -K1, th1);
+    const Fp = generalizedFresnelCS0(dKM, KM, thM);
+    const Fm = generalizedFresnelCS0(dKM, -KM, thM);
     return {
-      F: [
-        sim.end.x - g.x,
-        sim.end.y - g.y,
-        angleWrap(sim.end.yaw - g.yaw),
-        sim.end.k - (g.k || 0),
-        (params.L1 + params.L2 + params.L3) - totalRefLength,
-      ],
-      constraintsOk: (joinStartDev <= autoDmax && joinEndDev <= autoDmax && fairStart <= autoDmaxSmall && fairEnd <= autoDmaxSmall),
-      params,
-      sim,
-      joinStartDev,
-      joinEndDev,
-      fairStart,
-      fairEnd,
+      F: [s0 * F0.X + sM * (Fp.X + Fm.X) + s1 * F1.X - 2, s0 * F0.Y + sM * (Fp.Y + Fm.Y) + s1 * F1.Y],
+      dK0, dK1, dKM, KM, sM, thM, F0, Fm,
     };
   };
 
-  const Ls = totalRefLength / 3;
-  const seeds = [
-    [Ls, Ls, Ls, fairKappaAt(1/3), fairKappaAt(2/3)],
-    [Ls * 0.8, Ls * 1.4, Ls * 0.8, fairKappaAt(0.25), fairKappaAt(0.75)],
-    [Ls * 1.2, Ls * 0.6, Ls * 1.2, 0.5 * ((s.k || 0) + fairKappaAt(1/3)), 0.5 * ((g.k || 0) + fairKappaAt(2/3))],
-  ];
-
-  let best = { residual: Infinity, params: null, sim: null, constraintsOk: false };
-  for (const seed of seeds){
-    let v = seed.slice();
-    for (let iter=0; iter<24; iter++){
-      const cur = evalSystem(v);
-      if (!cur) break;
-      const residual = Math.hypot(cur.F[0], cur.F[1], cur.F[2] * 30, cur.F[3] * 120, cur.F[4] * 0.02);
-      const score = residual + (cur.constraintsOk ? 0 : 5);
-      const bestScore = best.residual + (best.constraintsOk ? 0 : 5);
-      if (score < bestScore) {
-        best = { residual, params: cur.params, sim: cur.sim, constraintsOk: cur.constraintsOk };
-      }
-      if (residual < 1e-5 && cur.constraintsOk) break;
-
-      const J = Array.from({ length: 5 }, () => new Array(5).fill(0));
-      for (let j=0; j<5; j++) {
-        const eps = j < 3 ? Math.max(1e-4, 0.002 * Math.max(1, Math.abs(v[j]))) : 1e-4;
-        const vp = v.slice(); vp[j] += eps;
-        const vm = v.slice(); vm[j] -= eps;
-        if (j < 3 && vm[j] <= 1e-3) vm[j] = 1e-3;
-        const fp = evalSystem(vp);
-        const fm = evalSystem(vm);
-        if (!fp || !fm) continue;
-        for (let i=0; i<5; i++) J[i][j] = (fp.F[i] - fm.F[i]) / (vp[j] - vm[j]);
-      }
-
-      const delta = solveLinearSystem(J, cur.F.map(x => -x));
-      if (!delta) break;
-
-      let accepted = false;
-      for (const damping of [1, 0.5, 0.25, 0.1, 0.05]) {
-        const cand = v.map((vv, i) => vv + damping * delta[i]);
-        cand[0] = Math.max(1e-3, cand[0]);
-        cand[1] = Math.max(1e-3, cand[1]);
-        cand[2] = Math.max(1e-3, cand[2]);
-        const nxt = evalSystem(cand);
-        if (!nxt) continue;
-        const nextResidual = Math.hypot(nxt.F[0], nxt.F[1], nxt.F[2] * 30, nxt.F[3] * 120, nxt.F[4] * 0.02);
-        if (nextResidual <= residual + 1e-9 || nxt.constraintsOk) {
-          v = cand;
-          accepted = true;
-          break;
-        }
-      }
-      if (!accepted) {
-        // 制約違反側に進み続けるのを防ぐ
-        v[0] = Math.max(1, v[0] * 0.95);
-        v[2] = Math.max(1, v[2] * 0.95);
-        v[3] = 0.5 * (v[3] + fairKappaAt(1/3));
-        v[4] = 0.5 * (v[4] + fairKappaAt(2/3));
-        if (Math.max(Math.abs(cur.F[0]), Math.abs(cur.F[1])) < 1e-2) break;
-      }
-    }
+  let X = [Math.max(1e-4, L), thMGuess];
+  let converged = false;
+  for (let iter = 0; iter < 40; iter++) {
+    const cur = evalF(X);
+    const lenF = Math.hypot(cur.F[0], cur.F[1]);
+    if (lenF < 1e-9) { converged = true; break; }
+    const epsS = Math.max(1e-5, 1e-3 * Math.abs(X[0]));
+    const epsT = 1e-5;
+    const FsP = evalF([X[0] + epsS, X[1]]).F;
+    const FsM = evalF([Math.max(1e-5, X[0] - epsS), X[1]]).F;
+    const FtP = evalF([X[0], X[1] + epsT]).F;
+    const FtM = evalF([X[0], X[1] - epsT]).F;
+    const J = [
+      [(FsP[0] - FsM[0]) / (X[0] + epsS - Math.max(1e-5, X[0] - epsS)), (FtP[0] - FtM[0]) / (2 * epsT)],
+      [(FsP[1] - FsM[1]) / (X[0] + epsS - Math.max(1e-5, X[0] - epsS)), (FtP[1] - FtM[1]) / (2 * epsT)],
+    ];
+    const dX = solveLinearSystem(J, [-cur.F[0], -cur.F[1]]);
+    if (!dX) break;
+    X[0] = Math.max(1e-5, X[0] + dX[0]);
+    X[1] = X[1] + dX[1];
   }
 
-  if (!best.params || best.residual > 2.5 || !best.constraintsOk){
-    // 固定長(1/3,1/3,1/3)に近い候補で終点一致を優先して再試行
-    let v = [Ls, Ls, Ls, fairKappaAt(1/3), fairKappaAt(2/3)];
-    for (let iter=0; iter<18; iter++){
-      const cur = evalSystem(v);
-      if (!cur) break;
-      const residual = Math.hypot(cur.F[0], cur.F[1], cur.F[2] * 30, cur.F[3] * 120, cur.F[4] * 0.05);
-      if (residual < best.residual) best = { residual, params: cur.params, sim: cur.sim, constraintsOk: cur.constraintsOk };
-      if (residual < 1e-4) break;
-      const J = Array.from({ length: 4 }, () => new Array(4).fill(0));
-      const G = cur.F.slice(0, 4);
-      for (let j=0; j<4; j++){
-        const eps = j < 2 ? 0.02 : 1e-4;
-        const vp = v.slice();
-        if (j < 2) vp[j + (j === 1 ? 1 : 0)] += eps;
-        else vp[j + 1] += eps;
-        const fp = evalSystem(vp);
-        if (!fp) continue;
-        for (let i=0;i<4;i++) J[i][j] = (fp.F[i] - G[i]) / eps;
-      }
-      const d = solveLinearSystem(J, G.map(x => -x));
-      if (!d) break;
-      v[0] = Math.max(1e-3, v[0] + 0.4 * d[0]);
-      v[2] = Math.max(1e-3, v[2] + 0.4 * d[1]);
-      v[3] += 0.4 * d[2];
-      v[4] += 0.4 * d[3];
-      v[1] = Math.max(1e-3, totalRefLength - v[0] - v[2]);
-    }
-  }
-
-  if (!best.params) {
+  const sol = evalF(X);
+  if (!converged && Math.hypot(sol.F[0], sol.F[1]) > 5e-4) {
     const fallback = sampleSingleClothoidG1(s, g, step);
     return { points:fallback.points, totalLength:fallback.totalLength, segments:['CLOTHOID'], type:'G2-3CLOTHOID-FALLBACK', rawSeg:[fallback.totalLength] };
   }
 
-  const sim = simulateThreeClothoidG2(s, g, best.params, Math.max(1, step || 1), true);
-  if (!sim) {
-    const fallback = sampleSingleClothoidG1(s, g, step);
-    return { points:fallback.points, totalLength:fallback.totalLength, segments:['CLOTHOID'], type:'G2-3CLOTHOID-FALLBACK', rawSeg:[fallback.totalLength] };
-  }
-  const endError = Math.hypot(sim.end.x - g.x, sim.end.y - g.y);
-  const yawError = Math.abs(angleWrap(sim.end.yaw - g.yaw));
-  const kError = Math.abs(sim.end.k - (g.k || 0));
-  if (endError > 0.8 || yawError > deg2rad(0.3) || kError > 0.0025) {
-    const fallback = sampleSingleClothoidG1(s, g, step);
-    return { points:fallback.points, totalLength:fallback.totalLength, segments:['CLOTHOID'], type:'G2-3CLOTHOID-FALLBACK', rawSeg:[fallback.totalLength] };
-  }
+  const xM = s0 * sol.F0.X + sol.sM * sol.Fm.X - 1;
+  const yM = s0 * sol.F0.Y + sol.sM * sol.Fm.Y;
+  const L0 = s0 / Lscale;
+  const L1 = s1 / Lscale;
+  const LM = sol.sM / Lscale;
+  const sigma0 = sol.dK0 * (Lscale / s0) ** 2;
+  const sigma1 = sol.dK1 * (Lscale / s1) ** 2;
+  const sigmaM = sol.dKM * (Lscale / sol.sM) ** 2;
+  const KM = sol.KM * Lscale / sol.sM;
+  const C = Math.cos(phi), S = Math.sin(phi);
+  const mx = s.x + C * ((xM + 1) / Lscale) - S * (yM / Lscale);
+  const my = s.y + C * (yM / Lscale) + S * ((xM + 1) / Lscale);
+  const mYaw = sol.thM + phi;
+
+  const pts = [{ x:s.x, y:s.y, yaw:mod2pi(s.yaw), k:s.k || 0 }];
+  const st0 = { x:s.x, y:s.y, yaw:s.yaw, k:s.k || 0 };
+  integrateClothoidSigned(st0, L0, sigma0, Math.max(1, step || 1), pts);
+
+  const stM = { x:mx, y:my, yaw:mYaw, k:KM };
+  integrateClothoidSigned(stM, -LM, sigmaM, Math.max(1, step || 1));
+  const middlePts = [{ x:stM.x, y:stM.y, yaw:mod2pi(stM.yaw), k:stM.k }];
+  integrateClothoidSigned(stM, 2 * LM, sigmaM, Math.max(1, step || 1), middlePts);
+  pts.push(...middlePts.slice(1));
+
+  const st1 = { x:g.x, y:g.y, yaw:g.yaw, k:g.k || 0 };
+  const tailBack = [{ x:st1.x, y:st1.y, yaw:mod2pi(st1.yaw), k:st1.k }];
+  integrateClothoidSigned(st1, -L1, sigma1, Math.max(1, step || 1), tailBack);
+  const tailForward = tailBack.reverse();
+  pts.push(...tailForward.slice(1));
 
   let len = 0;
-  for (let i=1;i<sim.points.length;i++) {
-    len += Math.hypot(sim.points[i].x - sim.points[i-1].x, sim.points[i].y - sim.points[i-1].y);
-  }
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
   return {
-    points: sim.points,
+    points: pts,
     totalLength: len,
     segments:['CLOTHOID','CLOTHOID','CLOTHOID'],
     type:'G2-3CLOTHOID',
-    rawSeg:[best.params.L1, best.params.L2, best.params.L3],
+    rawSeg:[L0, 2 * LM, L1],
   };
 }
 

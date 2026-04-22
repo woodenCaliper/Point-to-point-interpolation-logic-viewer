@@ -1976,11 +1976,13 @@ canvas.addEventListener('mouseleave', () => {
 
 $('randomBtn').addEventListener('click', ()=>{
   const r=(a,b)=> String(Math.round(Math.random()*(b-a)+a));
+  const currentSk = $('sk').value;
+  const currentGk = $('gk').value;
   $('sx').value=r(100,2000); $('sy').value=r(100,2000);
   $('gx').value=r(100,2000); $('gy').value=r(100,2000);
   $('syaw').value=r(-180,180); $('gyaw').value=r(-180,180);
-  $('sk').value='0';
-  $('gk').value='0';
+  $('sk').value=currentSk;
+  $('gk').value=currentGk;
   $('radius').value=r(50,400);
   $('ccTransition').value=r(0,100);
   $('g2Dmax').value=r(20,120);

@@ -8,6 +8,7 @@
 2. Dubins Path
 3. CC-Dubins Path
 4. 単一クロソイドG1補間パス (Single Clothoid G1)
+5. 3連クロソイドG2補間パス (Three Clothoid G2)
 
 > 今後、経路生成ロジックは追加される可能性がある。
 

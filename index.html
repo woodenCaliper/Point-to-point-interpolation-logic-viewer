@@ -501,9 +501,10 @@ function drawCurvatureGuide(pose, cfg, color){
   const sign = Math.sign(pose.k);
   const nx = -Math.sin(pose.yaw) * sign;
   const ny = Math.cos(pose.yaw) * sign;
-  const c = ws(pose.x + nx * R, pose.y + ny * R);
   const screenRadius = R * state.camera.scale;
   const visibleRadius = Math.max(screenRadius, 8);
+  const guideRadiusWorld = visibleRadius / Math.max(state.camera.scale, 1e-8);
+  const c = ws(pose.x + nx * guideRadiusWorld, pose.y + ny * guideRadiusWorld);
 
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.3;

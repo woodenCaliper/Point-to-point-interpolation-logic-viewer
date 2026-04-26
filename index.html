@@ -1470,58 +1470,33 @@ function sampleCCDubinsFromBase(s,g,R,step,sigmaMax,base){
   return { points:pts, totalLength:len, segments:base.segments, type:`CC-${base.type}`, rawSeg:base.rawSeg.slice() };
 }
 
-// CC-Dubinsパスの終点が目標点に一致するよう、Newton法でセグメント弧長を修正する。
+// CC-Dubinsパスの終点一致を担保するための補正処理。
 // クロソイド幾何はDubins円弧と位置軌跡が異なるため、基底Dubins弧長をそのまま使うと
 // 高遷移率で終点がずれる。本関数はその補正を行う。
+// 収束失敗を避けるため、終点合わせにNewton等の反復解法は使わない。
+// まずCC軌跡を生成し、終点誤差が許容内なら採用する。
+// 許容外の場合は候補不成立として棄却する（他候補で最短比較）。
 function refineCCDubins(s, g, R, sigmaMax, base){
-  let L = base.rawSeg.slice(); // 現在のセグメント弧長 [L0, L1, L2] (mm)
+  // 反復法を使わず、参照弧長(base.rawSeg)でCC軌跡を1回生成する。
+  // 終点誤差が許容外なら null を返し、候補集合から除外する。
+  const cc = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, base);
+  const end = cc.points[cc.points.length - 1];
+  const posErr = end ? Math.hypot(end.x - g.x, end.y - g.y) : Infinity;
+  const yawErr = end ? Math.abs(angleWrap(end.yaw - g.yaw)) : Infinity;
 
-  // 指定弧長でCCパスを積分し、終点の [x, y, yaw] を返す
-  const evalEnd = (Lv) => {
-    const fb = { segments: base.segments, rawSeg: Lv };
-    const pts = sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb).points;
-    const p = pts[pts.length - 1];
-    return [p.x, p.y, p.yaw];
-  };
-
-  const EPS = 0.5; // ヤコビアン数値微分のステップ [mm]
-
-  for(let iter = 0; iter < 20; iter++){
-    const [ex, ey, eYaw] = evalEnd(L);
-    const dx   = g.x   - ex;
-    const dy   = g.y   - ey;
-    const dYaw = angleWrap(g.yaw - eYaw);
-
-    if(Math.hypot(dx, dy) < 0.05 && Math.abs(dYaw) < 5e-4) break;
-
-    // 数値ヤコビアン J[出力行][入力列] = ∂output_i/∂L_j
-    const J = [[0,0,0],[0,0,0],[0,0,0]];
-    for(let j = 0; j < 3; j++){
-      const Lp = L.slice(); Lp[j] += EPS;
-      const [px, py, pYaw] = evalEnd(Lp);
-      J[0][j] = (px - ex) / EPS;
-      J[1][j] = (py - ey) / EPS;
-      J[2][j] = angleWrap(pYaw - eYaw) / EPS;
-    }
-
-    const delta = solve3x3(J, [dx, dy, dYaw]);
-    if(!delta) break;
-
-    // ステップサイズ制限（発散防止）
-    const norm = Math.sqrt(delta[0]**2 + delta[1]**2 + delta[2]**2);
-    const scale = norm > 30 ? 30 / norm : 1.0;
-
-    for(let j = 0; j < 3; j++){
-      L[j] = Math.max(1e-3, L[j] + scale * delta[j]);
-    }
+  const POS_TOL = Math.max(1.0, R * 0.02); // 例: R=250mm -> 5mm
+  const YAW_TOL = deg2rad(1.0);
+  if (posErr <= POS_TOL && yawErr <= YAW_TOL) {
+    cc.acceptance = { posErr, yawErr, posTol: POS_TOL, yawTol: YAW_TOL };
+    return cc;
   }
-
-  const fb = { segments: base.segments, rawSeg: L };
-  return sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb);
+  return null;
 }
+
 
 function generateCandidates(cfg){
   const list=[];
+  let ccRejected = 0;
   if (cfg.algorithm === 'linear') {
     const r = sampleLinear(cfg.start, cfg.goal, cfg.step);
     list.push({ id:'LINEAR', label:'LINEAR', ...r });
@@ -1552,12 +1527,16 @@ function generateCandidates(cfg){
       list.push({ id:t, label:t, ...base });
     } else {
       const cc = refineCCDubins(cfg.start, cfg.goal, cfg.radius, cfg.sigmaMax, base);
+      if (!cc) { ccRejected++; continue; }
       list.push({ id:`CC_${t}`, label:`CC-${t}`, ...cc });
     }
   }
 
   if (!list.length) {
-    list.push({ id:'1', label:'1', points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
+    const ccMsg = cfg.algorithm === 'cc_dubins'
+      ? `（CC候補不成立: ${ccRejected}件）`
+      : '';
+    list.push({ id:'1', label:`NO-PATH${ccMsg}`, points:[], totalLength:Infinity, segments:[], type:'N/A', rawSeg:[] });
   }
   return list;
 }
@@ -1578,12 +1557,26 @@ function evaluatePathIntegrity(candidate, start, goal, endTol=1e-6){
   return { startError, endError, maxStep, connected };
 }
 
+function isPathEligibleForShortest(path){
+  if (!path) return false;
+  if (!Number.isFinite(path.totalLength)) return false;
+  if (!path.integrity) return true;
+  return !!path.integrity.connected;
+}
+
 function computeShortestIndex(paths){
-  let bestIdx = 0;
-  for (let i=1;i<paths.length;i++) {
-    if (paths[i].totalLength < paths[bestIdx].totalLength) bestIdx = i;
+  let bestIdx = -1;
+  for (let i=0;i<paths.length;i++) {
+    if (!isPathEligibleForShortest(paths[i])) continue;
+    if (bestIdx < 0 || paths[i].totalLength < paths[bestIdx].totalLength) bestIdx = i;
   }
-  return bestIdx;
+  if (bestIdx >= 0) return bestIdx;
+
+  for (let i=0;i<paths.length;i++) {
+    if (!Number.isFinite(paths[i]?.totalLength)) continue;
+    if (bestIdx < 0 || paths[i].totalLength < paths[bestIdx].totalLength) bestIdx = i;
+  }
+  return bestIdx >= 0 ? bestIdx : 0;
 }
 
 function buildPathListUI(){

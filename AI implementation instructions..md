@@ -6,7 +6,7 @@
 
 ## 要件サマリ（`human requirement.md` 準拠）
 - 単一HTMLで 2D 経路比較ビューアを実装する。
-- 必須アルゴリズムは Linear / Dubins / CC-Dubins / Single Clothoid G1 / Three Clothoid G2。
+- 必須アルゴリズムは Linear / Dubins / CC-Dubins / Single Clothoid G1 / Three Clothoid G2 / Road Design 3-element Clothoid。
 - 単位は位置系=mm、角度系=°（degree）。
 - 数値入力は整数のみとする（小数入力なし）。
 - 最短判定は距離のみで行う。
@@ -86,7 +86,19 @@
    - 参照実装/定義は Holger Banzhaf らの `steering_functions` を正とする。
    - 近似的な補間や暫定実装は導入しない。
 
-10. **公開方針（GitHub Pages）**
+10. **道路設計3要素クロソイド実装方針**
+   - アルゴリズム識別子: `road_clothoid3`（ドロップダウン値）
+   - パス構造: Straight1(任意) + Clothoid1(k:0→κ_max) + Arc(k=κ_max) + Clothoid2(k:κ_max→0) + Straight2(任意)
+   - κ_max = sign/R、sign は angleWrap(g.yaw - s.yaw) の符号
+   - 総旋回角 |Δθ| = L_c/R + L_arc/R → L_arc = R*|Δθ| - L_c（≥0）
+   - 直線長 L_s1, L_s2 は 2×2 線形系（det = sin(Δθ)）を解いて決定する
+   - L_c ∈ [0, R*|Δθ|] を格子探索(120点) + 黄金分割法で最適化（総路長最小、L_s1≥0 かつ L_s2≥0 制約）
+   - |sin(Δθ)| < 1e-9 (方位差≒π) の場合は直線にフォールバック
+   - UI: needsTheta=true, needsRadius=true, 曲率入力・G2パラメータは不要
+   - 候補数は1件（自然旋回方向のみ）
+   - endTol = 1.5 mm
+
+11. **公開方針（GitHub Pages）**
    - 配布形態は GitHub Pages を前提とする。
    - 公開手順は GitHub 公式ドキュメントで一般的な方法（Pages設定または公式Actions）を優先する。
    - 単一HTMLで完結し、追加ビルドなしで公開可能な構成を維持する。

@@ -61,6 +61,7 @@
         <option value="reeds_shepp">G1 Reeds-Shepp Path</option>
         <option value="cc_dubins">G2 CC-Dubins Path</option>
         <option value="three_clothoid_g2">G2 Three Clothoid Path</option>
+        <option value="road_clothoid3">G2 Road Design Clothoid (Cl+Arc+Cl)</option>
       </select>
     </div>
 
@@ -214,7 +215,7 @@ function normalizeAngleInput(id){
 function updateInputVisibility(){
   const algo = $('algorithm').value;
   const needsTheta = algo !== 'linear';
-  const needsRadius = (algo === 'dubins' || algo === 'reeds_shepp' || algo === 'cc_dubins');
+  const needsRadius = (algo === 'dubins' || algo === 'reeds_shepp' || algo === 'cc_dubins' || algo === 'road_clothoid3');
   const needsCurvature = (algo === 'cc_dubins' || algo === 'three_clothoid_g2');
   document.querySelectorAll('.only-theta').forEach(e => e.style.display = needsTheta ? 'grid' : 'none');
   document.querySelectorAll('.only-turn').forEach(e => e.style.display = needsRadius ? 'grid' : 'none');
@@ -304,7 +305,7 @@ function gatherInput(){
   if (algorithm !== 'linear') {
     syaw = parseField('syaw'); gyaw = parseField('gyaw');
   }
-  if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') {
+  if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins' || algorithm === 'road_clothoid3') {
     radius = parseField('radius', v => v > 0);
   }
   if (algorithm === 'cc_dubins') {
@@ -321,7 +322,7 @@ function gatherInput(){
 
   const required = { sx, sy, gx, gy };
   if (algorithm !== 'linear') Object.assign(required, { syaw, gyaw });
-  if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins') Object.assign(required, { radius });
+  if (algorithm === 'dubins' || algorithm === 'reeds_shepp' || algorithm === 'cc_dubins' || algorithm === 'road_clothoid3') Object.assign(required, { radius });
   if (algorithm === 'cc_dubins') Object.assign(required, { sk, gk, ccTransition });
   if (algorithm === 'three_clothoid_g2') Object.assign(required, { sk, gk, g2Dmax, g2dmax });
 
@@ -1520,6 +1521,155 @@ function refineCCDubins(s, g, R, sigmaMax, base){
   return sampleCCDubinsFromBase(s, g, R, 1, sigmaMax, fb);
 }
 
+// 道路設計3要素クロソイド: 直線 → クロソイド → 円弧 → クロソイド → 直線
+// 境界曲率は常に0、旋回半径Rを指定し、L_c を総路長最小で自動最適化する。
+function sampleRoadDesignClothoid(s, g, R, step) {
+  const sampStep = Math.max(0.5, step || 1);
+  const dTheta = angleWrap(g.yaw - s.yaw);
+  const absTheta = Math.abs(dTheta);
+
+  if (absTheta < 1e-6) {
+    const lin = sampleLinear(s, g, sampStep);
+    return { points: lin.points, totalLength: lin.totalLength, segments: ['S'], type: 'ROAD-3EL', rawSeg: [lin.totalLength, 0, 0, 0, 0] };
+  }
+
+  const sign = dTheta > 0 ? 1 : -1;
+  const LcMax = R * absTheta;
+
+  // 3要素区間のローカルフレーム変位を計算（入口: 原点、方位0）
+  function getDisp3El(Lc) {
+    const Larc = LcMax - Lc;
+    if (Larc < -1e-9 || Lc < -1e-9) return null;
+    const st = { x: 0, y: 0, yaw: 0, k: 0 };
+    if (Lc > 1e-9) {
+      const sigma = sign / (R * Lc);
+      integrateClothoidSegment(st, Lc, sigma, sampStep, null);
+    }
+    if (Larc > 1e-9) {
+      integrateClothoidSegment(st, Larc, 0, sampStep, null);
+    }
+    if (Lc > 1e-9) {
+      const sigma = sign / (R * Lc);
+      integrateClothoidSegment(st, Lc, -sigma, sampStep, null);
+    }
+    return { dx: st.x, dy: st.y };
+  }
+
+  // 直線区間長 L_s1, L_s2 を 2×2 線形系で求める
+  // det = sin(dTheta) なので dTheta ≈ 0 or π のとき特異
+  function getStraights(Lc) {
+    const d = getDisp3El(Lc);
+    if (!d) return null;
+    const cs = Math.cos(s.yaw), ss_v = Math.sin(s.yaw);
+    const dx_g = cs * d.dx - ss_v * d.dy;
+    const dy_g = ss_v * d.dx + cs * d.dy;
+    const bx = (g.x - s.x) - dx_g;
+    const by = (g.y - s.y) - dy_g;
+    const det = Math.sin(dTheta);
+    if (Math.abs(det) < 1e-9) return null;
+    const Ls1 = (bx * Math.sin(g.yaw) - by * Math.cos(g.yaw)) / det;
+    const Ls2 = (-bx * Math.sin(s.yaw) + by * Math.cos(s.yaw)) / det;
+    if (!isFiniteNum(Ls1) || !isFiniteNum(Ls2) || Math.abs(Ls1) > 1e7 || Math.abs(Ls2) > 1e7) return null;
+    return { Ls1, Ls2 };
+  }
+
+  function evalTotal(Lc) {
+    const str = getStraights(Lc);
+    if (!str || str.Ls1 < -1e-3 || str.Ls2 < -1e-3) return Infinity;
+    return str.Ls1 + Lc + Math.max(0, LcMax - Lc) + Lc + str.Ls2;
+  }
+
+  // 格子探索 (120点)
+  const NSEARCH = 120;
+  let bestLc = -1, bestTotal = Infinity;
+  for (let i = 0; i <= NSEARCH; i++) {
+    const Lc = (i / NSEARCH) * LcMax;
+    const total = evalTotal(Lc);
+    if (total < bestTotal) { bestTotal = total; bestLc = Lc; }
+  }
+
+  // 黄金分割法で精密化
+  if (bestLc >= 0) {
+    const w = LcMax / NSEARCH;
+    let a = Math.max(0, bestLc - w), b = Math.min(LcMax, bestLc + w);
+    const phi = (Math.sqrt(5) - 1) / 2;
+    for (let iter = 0; iter < 40 && (b - a) > 1e-4; iter++) {
+      const m1 = b - phi * (b - a);
+      const m2 = a + phi * (b - a);
+      if (evalTotal(m1) <= evalTotal(m2)) b = m2; else a = m1;
+    }
+    const refined = (a + b) / 2;
+    if (evalTotal(refined) < bestTotal) { bestTotal = evalTotal(refined); bestLc = refined; }
+  }
+
+  // フォールバック: Lc=0 (直線+円弧+直線) で強制適用
+  if (bestLc < 0) bestLc = 0;
+
+  const Lc_used = bestLc;
+  const Larc = Math.max(0, LcMax - Lc_used);
+  const str = getStraights(Lc_used);
+  const Ls1 = str ? Math.max(0, str.Ls1) : 0;
+  const Ls2 = str ? Math.max(0, str.Ls2) : 0;
+  const sigma = Lc_used > 1e-9 ? sign / (R * Lc_used) : 0;
+
+  // パス構築
+  const pts = [];
+  const st = { x: s.x, y: s.y, yaw: s.yaw, k: 0 };
+  pts.push({ x: st.x, y: st.y, yaw: mod2pi(st.yaw), k: 0 });
+
+  // 直線1
+  if (Ls1 > 1e-3) {
+    const n1 = Math.max(1, Math.ceil(Ls1 / sampStep));
+    const ds1 = Ls1 / n1;
+    const csh = Math.cos(s.yaw), ssh = Math.sin(s.yaw);
+    for (let i = 0; i < n1; i++) {
+      st.x += ds1 * csh; st.y += ds1 * ssh;
+      pts.push({ x: st.x, y: st.y, yaw: mod2pi(s.yaw), k: 0 });
+    }
+    st.yaw = s.yaw; st.k = 0;
+  }
+
+  // クロソイド1: k: 0 → sign/R
+  if (Lc_used > 1e-9) {
+    integrateClothoidSegment(st, Lc_used, sigma, sampStep, pts);
+    st.k = sign / R; // 精度補正
+  }
+
+  // 円弧: k = sign/R (一定)
+  if (Larc > 1e-9) {
+    integrateClothoidSegment(st, Larc, 0, sampStep, pts);
+  }
+
+  // クロソイド2: k: sign/R → 0
+  if (Lc_used > 1e-9) {
+    integrateClothoidSegment(st, Lc_used, -sigma, sampStep, pts);
+    st.k = 0;
+  }
+
+  // 直線2
+  if (Ls2 > 1e-3) {
+    const n2 = Math.max(1, Math.ceil(Ls2 / sampStep));
+    const ds2 = Ls2 / n2;
+    const cgh = Math.cos(g.yaw), sgh = Math.sin(g.yaw);
+    for (let i = 0; i < n2; i++) {
+      st.x += ds2 * cgh; st.y += ds2 * sgh;
+      pts.push({ x: st.x, y: st.y, yaw: mod2pi(g.yaw), k: 0 });
+    }
+  }
+
+  const segs = [];
+  if (Ls1 > 1e-3) segs.push('S');
+  if (Lc_used > 1e-3) segs.push('Cl');
+  if (Larc > 1e-3) segs.push('Arc');
+  if (Lc_used > 1e-3) segs.push('Cl');
+  if (Ls2 > 1e-3) segs.push('S');
+
+  let totalLength = 0;
+  for (let i = 1; i < pts.length; i++) totalLength += Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y);
+
+  return { points: pts, totalLength, segments: segs, type: 'ROAD-3EL', rawSeg: [Ls1, Lc_used, Larc, Lc_used, Ls2] };
+}
+
 function generateCandidates(cfg){
   const list=[];
   if (cfg.algorithm === 'linear') {
@@ -1535,6 +1685,11 @@ function generateCandidates(cfg){
   if (cfg.algorithm === 'three_clothoid_g2') {
     const g2 = sampleThreeClothoidG2(cfg.start, cfg.goal, cfg.step, cfg.g2Dmax, cfg.g2dmax);
     list.push({ id:'G2_3C', label:'G2-3CLOTHOID', ...g2 });
+    return list;
+  }
+  if (cfg.algorithm === 'road_clothoid3') {
+    const r3 = sampleRoadDesignClothoid(cfg.start, cfg.goal, cfg.radius, cfg.step);
+    list.push({ id:'ROAD_3EL', label:'Road-3EL', ...r3 });
     return list;
   }
   if (cfg.algorithm === 'reeds_shepp') {
@@ -1666,7 +1821,9 @@ function recalculate(){
     ? Math.max(2.0, cfg.radius * 0.1)
     : (cfg.algorithm === 'three_clothoid_g2'
       ? 1.2
-      : (cfg.algorithm === 'reeds_shepp' ? 0.2 : 1e-6));
+      : (cfg.algorithm === 'reeds_shepp'
+        ? 0.2
+        : (cfg.algorithm === 'road_clothoid3' ? 1.5 : 1e-6)));
   const paths = generateCandidates(cfg).map(p => ({
     ...p,
     visible: true,
